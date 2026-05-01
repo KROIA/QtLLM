@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QProcess>
+#include <QStandardPaths>
 
 namespace QtLLM {
 
@@ -36,7 +37,12 @@ void OllamaManager::onCheckReplyFinished()
 
 bool OllamaManager::startServer()
 {
-    return QProcess::startDetached("ollama", QStringList{"serve"});
+    // QProcess::startDetached("ollama", ...) on Windows does not search the user's PATH
+    // the same way CMD does. Resolve the full path explicitly first.
+    QString exe = QStandardPaths::findExecutable("ollama");
+    if (exe.isEmpty())
+        return false;
+    return QProcess::startDetached(exe, QStringList{"serve"});
 }
 
 void OllamaManager::fetchLocalModels()
