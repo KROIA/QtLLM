@@ -2,13 +2,11 @@
   "permissions": {
     "allow": [
       "Task",
-
       "Read",
       "Glob",
       "Grep",
       "Edit(./**)",
       "Write(./**)",
-
       "Bash(pwd:*)",
       "Bash(ls:*)",
       "Bash(dir:*)",
@@ -22,7 +20,6 @@
       "Bash(rg:*)",
       "Bash(fd:*)",
       "Bash(tree:*)",
-
       "Bash(cd:*)",
       "Bash(mkdir:*)",
       "Bash(rmdir:*)",
@@ -33,7 +30,6 @@
       "Bash(move:*)",
       "Bash(cp:*)",
       "Bash(copy:*)",
-
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -52,7 +48,6 @@
       "Bash(git config:*)",
       "Bash(git rev-parse:*)",
       "Bash(git tag:*)",
-
       "Bash(cmake:*)",
       "Bash(ctest:*)",
       "Bash(cpack:*)",
@@ -68,14 +63,12 @@
       "Bash(moc:*)",
       "Bash(uic:*)",
       "Bash(rcc:*)",
-
       "Bash(python:*)",
       "Bash(py:*)",
       "Bash(pip:*)",
       "Bash(node:*)",
       "Bash(npm:*)",
       "Bash(npx:*)",
-
       "Bash(./build.bat:*)",
       "Bash(build.bat:*)",
       "Bash(./build.ps1:*)",
@@ -84,12 +77,10 @@
       "Bash(build/*)",
       "Bash(./installation/*)",
       "Bash(installation/*)",
-
       "Bash(./*.bat:*)",
       "Bash(./*.cmd:*)",
       "Bash(./*.ps1:*)",
       "Bash(./*.sh:*)",
-
       "PowerShell(Get-Content *)",
       "PowerShell(Set-Content *)",
       "PowerShell(New-Item *)",
@@ -100,7 +91,6 @@
       "PowerShell(Get-ChildItem *)",
       "PowerShell(Select-String *)",
       "PowerShell(Join-Path *)",
-
       "PowerShell(& *.ps1 *)",
       "PowerShell(cmake *)",
       "PowerShell(ctest *)",
@@ -127,7 +117,16 @@
       "PowerShell(git stash *)",
       "PowerShell(git commit *)",
       "PowerShell(git merge *)",
-      "PowerShell(git rebase *)"
+      "PowerShell(git rebase *)",
+      "Bash(where openssl *)",
+      "Read(//c/Qt/**)",
+      "Read(//c/Program Files/OpenSSL-Win64/**)",
+      "Read(//c/Program Files/OpenSSL-Win64/bin/**)",
+      "Bash(\"C:/Qt/5.15.2/msvc2019_64/bin/windeployqt.exe\" --help)",
+      "Bash(cmd /c \"\\\\\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\\\\" && cd \\\\\"C:\\\\Users\\\\KRIA\\\\Documents\\\\Visual Studio 2022\\\\Projects\\\\QtLLM\\\\\" && cmake --build build/x64-Debug 2>&1\")",
+      "Bash(cmd /c \"\\\\\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\\\\" && cmake --build \\\\\"C:\\\\Users\\\\KRIA\\\\Documents\\\\Visual Studio 2022\\\\Projects\\\\QtLLM\\\\build\\\\x64-Debug\\\\\"\")",
+      "Bash(cmd *)",
+      "Bash(powershell *)"
     ],
     "deny": [
       "Bash(git push)",

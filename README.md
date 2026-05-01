@@ -73,8 +73,4 @@ Detailed documentation is in the [`documentation/`](documentation/) folder:
 | Providers (Claude & Ollama) | [documentation/Providers.md](documentation/Providers.md) |
 | Examples | [documentation/Examples.md](documentation/Examples.md) |
 
----
 
-## License
-
-See [LICENSE](LICENSE).
