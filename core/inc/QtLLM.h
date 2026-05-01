@@ -14,4 +14,7 @@
 
 /// USER_SECTION_START 2
 
+#include "Tool.h"
+#include "Client.h"
+
 /// USER_SECTION_END
