@@ -6,6 +6,9 @@
 #include <QJsonArray>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QSettings>
+#include <QDir>
+#include <QFile>
 
 namespace QtLLM {
 
@@ -35,13 +38,52 @@ void OllamaManager::onCheckReplyFinished()
     emit isRunningChecked(running);
 }
 
+// Searches a semicolon-separated path list for ollama.exe and returns the first match.
+static QString searchPathList(const QString& pathList)
+{
+    for (const QString& dir : pathList.split(';', Qt::SkipEmptyParts)) {
+        QString candidate = QDir(dir.trimmed()).filePath("ollama.exe");
+        if (QFile::exists(candidate))
+            return candidate;
+    }
+    return {};
+}
+
 bool OllamaManager::startServer()
 {
-    // QProcess::startDetached("ollama", ...) on Windows does not search the user's PATH
-    // the same way CMD does. Resolve the full path explicitly first.
-    QString exe = QStandardPaths::findExecutable("ollama");
+    QString exe;
+
+    // 1. Qt process PATH (works when the app is launched from a shell with PATH set)
+    exe = QStandardPaths::findExecutable("ollama");
+
+    // 2. Known default install location (%LOCALAPPDATA%\Programs\Ollama)
+    if (exe.isEmpty()) {
+        QString local = QDir::fromNativeSeparators(
+            QString::fromLocal8Bit(qgetenv("LOCALAPPDATA")));
+        if (!local.isEmpty()) {
+            QString candidate = local + "/Programs/Ollama/ollama.exe";
+            if (QFile::exists(candidate))
+                exe = candidate;
+        }
+    }
+
+    // 3. Registry: HKCU\Environment\Path  (user PATH — set via System Properties)
+    if (exe.isEmpty()) {
+        QSettings hkcu("HKEY_CURRENT_USER\\Environment", QSettings::NativeFormat);
+        exe = searchPathList(hkcu.value("Path").toString());
+    }
+
+    // 4. Registry: HKLM system PATH
+    if (exe.isEmpty()) {
+        QSettings hklm(
+            "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+            QSettings::NativeFormat);
+        exe = searchPathList(hklm.value("Path").toString());
+    }
+
     if (exe.isEmpty())
         return false;
+
     return QProcess::startDetached(exe, QStringList{"serve"});
 }
 
