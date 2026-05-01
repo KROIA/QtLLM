@@ -1,5 +1,6 @@
 #include "Client.h"
 #include "ClaudeProtocol.h"
+#include "OllamaProtocol.h"
 #include <QJsonObject>
 #include <QJsonDocument>
 
@@ -9,34 +10,58 @@ Client::Client(const QString& apiKey, const QString& url, QObject* parent)
     : QObject(parent)
     , m_protocol(new ClaudeProtocol(apiKey, QUrl(url), this))
 {
-    connect(m_protocol, &ClaudeProtocol::responseReady,    this, &Client::responseReady);
-    connect(m_protocol, &ClaudeProtocol::toolInvoked,      this, &Client::toolInvoked);
-    connect(m_protocol, &ClaudeProtocol::toolCompleted,    this, &Client::toolCompleted);
-    connect(m_protocol, &ClaudeProtocol::errorOccurred,    this, &Client::errorOccurred);
-    connect(m_protocol, &ClaudeProtocol::requestStarted,   this, &Client::requestStarted);
-    connect(m_protocol, &ClaudeProtocol::requestFinished,  this, &Client::requestFinished);
+    connectProtocol();
+}
+
+Client::Client(Provider provider, const QString& url, const QString& apiKey, QObject* parent)
+    : QObject(parent)
+    , m_protocol(nullptr)
+{
+    switch (provider) {
+    case Provider::Ollama:
+        m_protocol = new OllamaProtocol(QUrl(url), this);
+        break;
+    case Provider::Claude:
+    default:
+        m_protocol = new ClaudeProtocol(apiKey, QUrl(url), this);
+        break;
+    }
+    connectProtocol();
 }
 
 Client::~Client() = default;
 
-void Client::setModel(const QString& model)
+void Client::connectProtocol()
 {
-    m_protocol->setModel(model);
+    // responseReady goes through a slot so we can update m_history first
+    connect(m_protocol, &ProtocolBase::responseReady,   this, &Client::onProtocolResponseReady);
+    connect(m_protocol, &ProtocolBase::toolInvoked,     this, &Client::toolInvoked);
+    connect(m_protocol, &ProtocolBase::toolCompleted,   this, &Client::toolCompleted);
+    connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::errorOccurred);
+    connect(m_protocol, &ProtocolBase::requestStarted,  this, &Client::requestStarted);
+    connect(m_protocol, &ProtocolBase::requestFinished, this, &Client::requestFinished);
 }
 
-void Client::setMaxTokens(int maxTokens)
+void Client::onProtocolResponseReady(const QString& text)
 {
-    m_protocol->setMaxTokens(maxTokens);
+    QJsonObject msg;
+    msg["role"]    = "assistant";
+    msg["content"] = text;
+    m_history.append(msg);
+    emit responseReady(text);
 }
 
-void Client::setSystemPrompt(const QString& systemPrompt)
-{
-    m_protocol->setSystemPrompt(systemPrompt);
-}
+void Client::setModel(const QString& model)       { m_protocol->setModel(model); }
+void Client::setMaxTokens(int maxTokens)           { m_protocol->setMaxTokens(maxTokens); }
+void Client::setSystemPrompt(const QString& p)     { m_protocol->setSystemPrompt(p); }
 
 void Client::registerTool(const Tool& tool, ToolHandler handler)
 {
-    m_tools[tool.name()] = RegisteredTool{ tool.toApiObject(), handler };
+    RegisteredTool rt;
+    rt.claudeSchema = tool.toApiObject();
+    rt.openAiSchema = tool.toOpenAiApiObject();
+    rt.handler      = std::move(handler);
+    m_tools[tool.name()] = rt;
     syncToolsToProtocol();
 }
 
@@ -45,12 +70,26 @@ void Client::registerTool(const QString& name,
                            const QJsonObject& parameterSchema,
                            ToolHandler handler)
 {
-    QJsonObject schema;
-    schema["name"]         = name;
-    schema["description"]  = description;
-    schema["input_schema"] = parameterSchema;
+    // Claude format
+    QJsonObject claudeSchema;
+    claudeSchema["name"]         = name;
+    claudeSchema["description"]  = description;
+    claudeSchema["input_schema"] = parameterSchema;
 
-    m_tools[name] = RegisteredTool{ schema, handler };
+    // OpenAI format — wrap parameterSchema as "parameters"
+    QJsonObject fnObj;
+    fnObj["name"]        = name;
+    fnObj["description"] = description;
+    fnObj["parameters"]  = parameterSchema;
+    QJsonObject openAiSchema;
+    openAiSchema["type"]     = QStringLiteral("function");
+    openAiSchema["function"] = fnObj;
+
+    RegisteredTool rt;
+    rt.claudeSchema = claudeSchema;
+    rt.openAiSchema = openAiSchema;
+    rt.handler      = std::move(handler);
+    m_tools[name]   = rt;
     syncToolsToProtocol();
 }
 
@@ -62,25 +101,25 @@ void Client::unregisterTool(const QString& toolName)
 
 void Client::syncToolsToProtocol()
 {
+    bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+
     QList<QJsonObject> schemas;
     QMap<QString, ToolHandler> handlers;
 
-    for (auto it = m_tools.constBegin(); it != m_tools.constEnd(); ++it) {
-        schemas.append(it.value().schema);
-        handlers[it.key()] = it.value().handler;
+    for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+        schemas.append(isOllama ? it.value().openAiSchema : it.value().claudeSchema);
+        handlers.insert(it.key(), it.value().handler);
     }
-
     m_protocol->setTools(schemas, handlers);
 }
 
 void Client::sendPrompt(const QString& userMessage)
 {
     QJsonObject msg;
-    msg["role"]    = QStringLiteral("user");
+    msg["role"]    = "user";
     msg["content"] = userMessage;
     m_history.append(msg);
-
-    m_protocol->sendTurn(m_history);
+    m_protocol->beginTurn(userMessage);
 }
 
 void Client::clearConversation()

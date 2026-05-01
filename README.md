@@ -12,7 +12,7 @@ The library's primary feature is **tool/function calling**: your application reg
 - **Tool use / function calling** — register any C++ lambda as a callable tool for the LLM
 - Fully **asynchronous** via Qt signals and slots — never blocks the UI thread
 - Uses only **Qt5 modules** (Core, Network) — no libcurl, no third-party JSON library
-- Provider-agnostic design; initial implementation targets the **Anthropic Claude Messages API**
+- Provider-agnostic design — supports **Anthropic Claude** and **Ollama** (local inference)
 - Builds as both a **shared** and **static** library
 
 ---
@@ -82,6 +82,35 @@ int main(int argc, char* argv[])
 
 ---
 
+## Ollama (Local LLM)
+
+To connect to a locally running [Ollama](https://ollama.com) server instead of Claude, pass the `Provider::Ollama` enum value to the second constructor:
+
+```cpp
+#include <QtLLM.h>
+
+QtLLM::Client client(
+    QtLLM::Provider::Ollama,
+    "http://localhost:11434/api/chat",
+    ""   // no API key needed for local Ollama
+);
+
+client.setModel("llama3.2");
+client.setSystemPrompt("You are a helpful assistant.");
+
+QObject::connect(&client, &QtLLM::Client::responseReady, [](const QString& text) {
+    qDebug() << "Assistant:" << text;
+});
+
+client.sendPrompt("Hello!");
+```
+
+Tool use works identically for Ollama — register tools the same way and the library picks the correct schema format automatically.
+
+> **Note:** Tool calling requires a model that supports it (e.g. `llama3.2`, `mistral-nemo`). Check the Ollama model page for capability details.
+
+---
+
 ## Tool Use (Function Calling)
 
 Register C++ functions that the LLM can call during a conversation. The library handles the full multi-turn tool-use loop automatically.
@@ -142,11 +171,24 @@ When the LLM decides to call a tool, the library:
 The primary class. Inherits `QObject`.
 
 ```cpp
-// Constructor
+// Claude (default endpoint)
 explicit Client(const QString& apiKey,
                 const QString& url = "https://api.anthropic.com/v1/messages",
                 QObject* parent = nullptr);
+
+// Explicit provider selection (Ollama or Claude)
+explicit Client(Provider provider,
+                const QString& url,
+                const QString& apiKey = QString(),
+                QObject* parent = nullptr);
 ```
+
+#### `QtLLM::Provider`
+
+| Value | Description |
+|---|---|
+| `Provider::Claude` | Anthropic Claude Messages API (default) |
+| `Provider::Ollama` | Ollama local inference server (`/api/chat`) |
 
 #### Configuration
 
@@ -209,6 +251,7 @@ tool.setName("myTool")
 | `name()` | `QString` | Returns the tool name |
 | `description()` | `QString` | Returns the description |
 | `toApiObject()` | `QJsonObject` | Produces the Claude API `tools` array element |
+| `toOpenAiApiObject()` | `QJsonObject` | Produces the tool object for OpenAI-compatible APIs (Ollama). Schema is wrapped under `"function"` → `"parameters"` |
 
 ---
 
@@ -263,7 +306,9 @@ QtLLM/
 │   └── src/
 │       ├── Client.cpp
 │       ├── Tool.cpp
-│       ├── ClaudeProtocol.h/cpp   # Internal — Claude API request/response handling
+│       ├── ProtocolBase.h/cpp     # Internal — abstract base for provider protocols
+│       ├── ClaudeProtocol.h/cpp   # Internal — Claude Messages API implementation
+│       ├── OllamaProtocol.h/cpp   # Internal — Ollama /api/chat implementation
 │       └── HttpTransport.h/cpp    # Internal — QNetworkAccessManager wrapper
 ├── examples/
 │   ├── LibraryExample/        # Qt Widgets chat window demo

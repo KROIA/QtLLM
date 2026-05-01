@@ -9,6 +9,7 @@
 
 ChatWindow::ChatWindow(const QString& apiKey,
                        const QString& endpointUrl,
+                       const QString& model,
                        QWidget* parent)
     : QWidget(parent)
     , m_client(apiKey, endpointUrl, this)
@@ -20,7 +21,31 @@ ChatWindow::ChatWindow(const QString& apiKey,
     registerTools();
     connectSignals();
 
-    m_client.setModel("claude-sonnet-4-5");
+    m_client.setModel(model);
+    m_client.setMaxTokens(1024);
+    m_client.setSystemPrompt(
+        "You are a helpful assistant embedded in a Qt desktop application. "
+        "You have access to a tool that lets you change the application window title. "
+        "Use it when the user asks you to rename or retitle the window.");
+
+    appendNote("Connected. Type a message and press Send or Enter.");
+}
+ChatWindow::ChatWindow(QtLLM::Provider provider, 
+                       const QString& apiKey,
+                       const QString& endpointUrl,
+                       const QString& model,
+                       QWidget* parent)
+    : QWidget(parent)
+    , m_client(provider, endpointUrl, apiKey, this)
+{
+    setWindowTitle("QtLLM Chat");
+    resize(800, 600);
+
+    buildUi();
+    registerTools();
+    connectSignals();
+
+    m_client.setModel(model);
     m_client.setMaxTokens(1024);
     m_client.setSystemPrompt(
         "You are a helpful assistant embedded in a Qt desktop application. "

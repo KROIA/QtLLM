@@ -26,8 +26,11 @@ public:
     QString name() const;
     QString description() const;
 
-    // Produces the object placed in the Claude API "tools" array
+    // Produces the object placed in the Claude API "tools" array; uses "input_schema" key (Claude format).
     QJsonObject toApiObject() const;
+
+    // Produces the tool object for OpenAI-compatible APIs (Ollama, etc.); wraps parameters under "parameters" key inside a "function" object.
+    QJsonObject toOpenAiApiObject() const;
 
 private:
     struct Parameter {

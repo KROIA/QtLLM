@@ -11,7 +11,7 @@ namespace QtLLM
 ClaudeProtocol::ClaudeProtocol(const QString& apiKey,
                                const QUrl& url,
                                QObject* parent)
-    : QObject(parent)
+    : ProtocolBase(parent)
     , m_apiKey(apiKey)
     , m_url(url)
     , m_model("claude-opus-4-5")
@@ -52,23 +52,29 @@ void ClaudeProtocol::setTools(const QList<QJsonObject>& toolSchemas,
     m_toolHandlers = handlers;
 }
 
-void ClaudeProtocol::sendTurn(const QJsonArray& history)
+void ClaudeProtocol::beginTurn(const QString& userMessage)
 {
-    m_history = history;
+    QJsonObject msg;
+    msg["role"]    = "user";
+    msg["content"] = userMessage;
+    m_history.append(msg);
+    sendRequest();
+}
+
+void ClaudeProtocol::sendRequest()
+{
     QJsonObject body = buildRequestBody();
     QByteArray bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
     emit requestStarted();
-    m_transport->post(m_url, bytes, m_apiKey);
+    QList<QPair<QByteArray, QByteArray>> headers;
+    headers.append({"x-api-key",        m_apiKey.toUtf8()});
+    headers.append({ QByteArray("anthropic-version"), QByteArray("2023-06-01")});
+    m_transport->post(m_url, bytes, headers);
 }
 
 void ClaudeProtocol::clearHistory()
 {
     m_history = QJsonArray();
-}
-
-QJsonArray ClaudeProtocol::history() const
-{
-    return m_history;
 }
 
 QJsonObject ClaudeProtocol::buildRequestBody() const
@@ -145,7 +151,7 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         }
 
         executeToolCalls(toolUseBlocks);
-        sendTurn(m_history);
+        sendRequest();
     }
 }
 

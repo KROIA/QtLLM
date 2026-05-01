@@ -71,4 +71,37 @@ QJsonObject Tool::toApiObject() const
     return obj;
 }
 
+QJsonObject Tool::toOpenAiApiObject() const
+{
+    QJsonObject properties;
+    QJsonArray requiredArray;
+
+    for (const Parameter& param : m_parameters) {
+        QJsonObject paramObj;
+        paramObj["type"]        = param.type;
+        paramObj["description"] = param.description;
+        properties[param.name]  = paramObj;
+
+        if (param.required)
+            requiredArray.append(param.name);
+    }
+
+    QJsonObject parameters;
+    parameters["type"]       = QStringLiteral("object");
+    parameters["properties"] = properties;
+    if (!requiredArray.isEmpty())
+        parameters["required"] = requiredArray;
+
+    QJsonObject function;
+    function["name"]        = m_name;
+    function["description"] = m_description;
+    function["parameters"]  = parameters;
+
+    QJsonObject obj;
+    obj["type"]     = QStringLiteral("function");
+    obj["function"] = function;
+
+    return obj;
+}
+
 } // namespace QtLLM

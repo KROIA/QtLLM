@@ -13,6 +13,12 @@ class ChatWindow : public QWidget
 public:
     explicit ChatWindow(const QString& apiKey,
                         const QString& endpointUrl,
+		                const QString& model = "claude-sonnet-4-5",
+                        QWidget* parent = nullptr);
+    explicit ChatWindow(QtLLM::Provider provider,
+                        const QString& apiKey,
+                        const QString& endpointUrl,
+                        const QString& model,
                         QWidget* parent = nullptr);
     ~ChatWindow() override;
 

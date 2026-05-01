@@ -20,7 +20,8 @@ int main(int argc, char* argv[])
     }
 
     // ANTHROPIC_FOUNDRY_BASE_URL is a base URL — append the messages endpoint path
-    ChatWindow window(apiKey, baseUrl + "/v1/messages");
+    //ChatWindow window(apiKey, baseUrl + "/v1/messages");
+    ChatWindow window(QtLLM::Provider::Ollama, "", "http://localhost:11434/api/chat", "gpt-oss:20b");
     window.show();
 
     return app.exec();

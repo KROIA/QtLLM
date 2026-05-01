@@ -23,7 +23,7 @@ HttpTransport::~HttpTransport() = default;
 
 void HttpTransport::post(const QUrl& url,
                          const QByteArray& jsonBody,
-                         const QString& apiKey)
+                         const QList<QPair<QByteArray, QByteArray>>& headers)
 {
     if (m_busy) {
         emit errorOccurred("Request already in progress");
@@ -34,8 +34,9 @@ void HttpTransport::post(const QUrl& url,
 
     QNetworkRequest request(url);
     request.setRawHeader("Content-Type", "application/json");
-    request.setRawHeader("x-api-key", apiKey.toUtf8());
-    request.setRawHeader("anthropic-version", "2023-06-01");
+    for (const auto& pair : headers) {
+        request.setRawHeader(pair.first, pair.second);
+    }
 
     m_nam->post(request, jsonBody);
 }
