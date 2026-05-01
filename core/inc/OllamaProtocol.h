@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QString>
 #include <QMap>
+#include <QElapsedTimer>
 
 namespace QtLLM {
 
@@ -25,6 +26,7 @@ public:
 
     void beginTurn(const QString& userMessage) override;
     void clearHistory() override;
+    void clearStats() override;
 
 private slots:
     void onReplyReceived(const QByteArray& data);
@@ -44,6 +46,17 @@ private:
     QMap<QString, ToolHandler> m_toolHandlers;
     QJsonArray                 m_history;
     HttpTransport*             m_transport;
+
+    // Stats tracking
+    QElapsedTimer m_turnTimer;
+    int  m_turnInputTokens  = 0;
+    int  m_turnOutputTokens = 0;
+    int  m_turnToolCalls    = 0;
+    bool m_turnTimerStarted = false;
+    int  m_sessionInputTokens  = 0;
+    int  m_sessionOutputTokens = 0;
+    int  m_sessionToolCalls    = 0;
+    int  m_sessionTurnCount    = 0;
 };
 
 } // namespace QtLLM

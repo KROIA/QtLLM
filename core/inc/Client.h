@@ -2,6 +2,7 @@
 #include "QtLLM_base.h"
 #include "Tool.h"
 #include "ProtocolBase.h"
+#include "UsageStats.h"
 #include <QObject>
 #include <QString>
 #include <QJsonArray>
@@ -57,10 +58,13 @@ public:
     // Appends userMessage to history and sends the full conversation to the API.
     void sendPrompt(const QString& userMessage);
 
-    // Clears conversation history. Preserves registered tools and settings.
+    // Clears conversation history and resets session statistics. Preserves registered tools and settings.
     void clearConversation();
 
     QJsonArray conversationHistory() const;
+
+    // Returns the statistics from the most recently completed turn.
+    UsageStats usageStats() const;
 
 signals:
     // Emitted after all tool calls in a turn are resolved; text is the final LLM reply.
@@ -75,9 +79,12 @@ signals:
     void requestStarted();
     // Emitted when the turn is fully resolved (after final response or error).
     void requestFinished();
+    // Emitted once per completed turn with token counts, timing, and estimated cost.
+    void statsUpdated(const QtLLM::UsageStats& stats);
 
 private slots:
     void onProtocolResponseReady(const QString& text);
+    void onProtocolStatsReady(const QtLLM::UsageStats& stats);
 
 private:
     void connectProtocol();
@@ -92,6 +99,7 @@ private:
     QMap<QString, RegisteredTool> m_tools;
     QJsonArray                    m_history;
     ProtocolBase*                 m_protocol;
+    UsageStats                    m_lastStats;
 };
 
 } // namespace QtLLM

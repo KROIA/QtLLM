@@ -46,6 +46,11 @@ void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void OllamaProtocol::beginTurn(const QString& userMessage)
 {
+    m_turnInputTokens  = 0;
+    m_turnOutputTokens = 0;
+    m_turnToolCalls    = 0;
+    m_turnTimerStarted = false;
+
     QJsonObject msg;
     msg["role"]    = "user";
     msg["content"] = userMessage;
@@ -57,6 +62,12 @@ void OllamaProtocol::sendRequest()
 {
     QJsonObject body  = buildRequestBody();
     QByteArray  bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    if (!m_turnTimerStarted) {
+        m_turnTimer.start();
+        m_turnTimerStarted = true;
+    }
+
     emit requestStarted();
     m_transport->post(m_url, bytes, {});
 }
@@ -64,6 +75,14 @@ void OllamaProtocol::sendRequest()
 void OllamaProtocol::clearHistory()
 {
     m_history = QJsonArray();
+}
+
+void OllamaProtocol::clearStats()
+{
+    m_sessionInputTokens  = 0;
+    m_sessionOutputTokens = 0;
+    m_sessionToolCalls    = 0;
+    m_sessionTurnCount    = 0;
 }
 
 QJsonObject OllamaProtocol::buildRequestBody() const
@@ -122,6 +141,10 @@ void OllamaProtocol::onReplyReceived(const QByteArray& data)
 
 void OllamaProtocol::processResponse(const QJsonObject& responseJson)
 {
+    // Ollama reports token counts in the top-level response object
+    m_turnInputTokens  += responseJson["prompt_eval_count"].toInt();
+    m_turnOutputTokens += responseJson["eval_count"].toInt();
+
     QJsonObject message    = responseJson["message"].toObject();
     QJsonArray  toolCalls  = message["tool_calls"].toArray();
 
@@ -144,8 +167,26 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
     assistantMsg["content"] = text;
     m_history.append(assistantMsg);
 
+    // Finalize session stats (no cost for local models)
+    m_sessionInputTokens  += m_turnInputTokens;
+    m_sessionOutputTokens += m_turnOutputTokens;
+    m_sessionToolCalls    += m_turnToolCalls;
+    ++m_sessionTurnCount;
+
+    UsageStats stats;
+    stats.inputTokens         = m_turnInputTokens;
+    stats.outputTokens        = m_turnOutputTokens;
+    stats.toolCalls           = m_turnToolCalls;
+    stats.durationMs          = m_turnTimer.elapsed();
+    stats.sessionInputTokens  = m_sessionInputTokens;
+    stats.sessionOutputTokens = m_sessionOutputTokens;
+    stats.sessionToolCalls    = m_sessionToolCalls;
+    stats.sessionTurnCount    = m_sessionTurnCount;
+    stats.sessionCostUsd      = 0.0;
+
     emit requestFinished();
     emit responseReady(text);
+    emit statsReady(stats);
 }
 
 void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
@@ -178,6 +219,7 @@ void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
             continue;
         }
 
+        ++m_turnToolCalls;
         emit toolInvoked(toolName, toolInput);
         QJsonObject result = m_toolHandlers[toolName](toolInput);
         emit toolCompleted(toolName, result);

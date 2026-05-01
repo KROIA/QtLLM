@@ -1,5 +1,6 @@
 #pragma once
 #include "QtLLM_base.h"
+#include "UsageStats.h"
 #include <QObject>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -32,6 +33,9 @@ public:
 
     virtual void clearHistory() = 0;
 
+    // Reset accumulated session statistics (called by Client::clearConversation).
+    virtual void clearStats() = 0;
+
 signals:
     void responseReady(const QString& assembledText);
     void toolInvoked(const QString& toolName, const QJsonObject& input);
@@ -39,6 +43,8 @@ signals:
     void errorOccurred(const QString& message);
     void requestStarted();
     void requestFinished();
+    // Emitted once per completed turn (after requestFinished) with full token and cost data.
+    void statsReady(const QtLLM::UsageStats& stats);
 };
 
 } // namespace QtLLM

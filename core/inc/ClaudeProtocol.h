@@ -5,6 +5,7 @@
 #include <QString>
 #include <QMap>
 #include <QUrl>
+#include <QElapsedTimer>
 #include <functional>
 #include "ProtocolBase.h"
 #include "HttpTransport.h"
@@ -32,6 +33,7 @@ public:
     void beginTurn(const QString& userMessage) override;
 
     void clearHistory() override;
+    void clearStats() override;
 
 private slots:
     void onReplyReceived(const QByteArray& data);
@@ -43,6 +45,8 @@ private:
     void        processResponse(const QJsonObject& responseJson);
     void        executeToolCalls(const QJsonArray& toolUseBlocks);
     QString     assembleText(const QJsonArray& content) const;
+    // Returns per-million-token cost {inputUsd, outputUsd} for the current model; 0 if unknown.
+    QPair<double, double> modelPricing() const;
 
     QString                    m_apiKey;
     QUrl                       m_url;
@@ -53,6 +57,18 @@ private:
     QMap<QString, ToolHandler> m_toolHandlers;
     QJsonArray                 m_history;
     HttpTransport*             m_transport;
+
+    // Stats tracking
+    QElapsedTimer m_turnTimer;
+    int    m_turnInputTokens  = 0;
+    int    m_turnOutputTokens = 0;
+    int    m_turnToolCalls    = 0;
+    bool   m_turnTimerStarted = false;
+    int    m_sessionInputTokens  = 0;
+    int    m_sessionOutputTokens = 0;
+    int    m_sessionToolCalls    = 0;
+    int    m_sessionTurnCount    = 0;
+    double m_sessionCostUsd      = 0.0;
 };
 
 } // namespace QtLLM

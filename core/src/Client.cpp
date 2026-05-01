@@ -35,6 +35,7 @@ void Client::connectProtocol()
 {
     // responseReady goes through a slot so we can update m_history first
     connect(m_protocol, &ProtocolBase::responseReady,   this, &Client::onProtocolResponseReady);
+    connect(m_protocol, &ProtocolBase::statsReady,      this, &Client::onProtocolStatsReady);
     connect(m_protocol, &ProtocolBase::toolInvoked,     this, &Client::toolInvoked);
     connect(m_protocol, &ProtocolBase::toolCompleted,   this, &Client::toolCompleted);
     connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::errorOccurred);
@@ -49,6 +50,12 @@ void Client::onProtocolResponseReady(const QString& text)
     msg["content"] = text;
     m_history.append(msg);
     emit responseReady(text);
+}
+
+void Client::onProtocolStatsReady(const QtLLM::UsageStats& stats)
+{
+    m_lastStats = stats;
+    emit statsUpdated(stats);
 }
 
 void Client::setModel(const QString& model)       { m_protocol->setModel(model); }
@@ -126,11 +133,18 @@ void Client::clearConversation()
 {
     m_history = QJsonArray();
     m_protocol->clearHistory();
+    m_protocol->clearStats();
+    m_lastStats = UsageStats{};
 }
 
 QJsonArray Client::conversationHistory() const
 {
     return m_history;
+}
+
+UsageStats Client::usageStats() const
+{
+    return m_lastStats;
 }
 
 } // namespace QtLLM
