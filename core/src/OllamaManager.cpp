@@ -9,6 +9,9 @@
 #include <QSettings>
 #include <QDir>
 #include <QFile>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace QtLLM {
 
@@ -84,7 +87,21 @@ bool OllamaManager::startServer()
     if (exe.isEmpty())
         return false;
 
-    return QProcess::startDetached(exe, QStringList{"serve"});
+    // Use the instance form of startDetached() so we can set Windows creation flags
+    // that hide the console window and fully detach the process from our own.
+    QProcess proc;
+    proc.setProgram(exe);
+    proc.setArguments({"serve"});
+
+#ifdef Q_OS_WIN
+    proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
+        // DETACHED_PROCESS: new process has no console inherited from parent.
+        // CREATE_NO_WINDOW:  suppresses any console window the child would create.
+        args->flags |= DETACHED_PROCESS | CREATE_NO_WINDOW;
+    });
+#endif
+
+    return proc.startDetached();
 }
 
 void OllamaManager::fetchLocalModels()
