@@ -6,6 +6,8 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QGroupBox>
+#include <QComboBox>
+#include <QTimer>
 #include <QJsonObject>
 
 // Main chat window — hosts the conversation display, user input area, and a stats panel.
@@ -33,19 +35,39 @@ private slots:
     void onRequestFinished();
     void onStatsUpdated(const QtLLM::UsageStats& stats);
 
+    // Ollama model management
+    void onOllamaRunningChecked(bool running);
+    void onLocalModelsReady(const QList<QtLLM::OllamaManager::ModelInfo>& models);
+    void onModelComboChanged(int index);
+    void onManageModelsClicked();
+
 private:
     void buildUi();
     void registerTools();
     void connectSignals();
+    void initOllamaIfNeeded();
 
     // Appends a formatted message block to the chat display.
     void appendMessage(const QString& sender, const QString& text, const QString& color);
     void appendNote(const QString& text);
 
+    bool         m_isOllama = false;
+    QString      m_currentModel;
+
     QTextEdit*   m_display;
     QLineEdit*   m_input;
     QPushButton* m_sendBtn;
     QtLLM::Client m_client;
+
+    // Model bar (top, Ollama only)
+    QComboBox*   m_modelCombo  = nullptr;
+    QPushButton* m_modelsBtn   = nullptr;
+    QLabel*      m_ollamaStatus= nullptr;
+
+    // Ollama manager (null when using Claude)
+    QtLLM::OllamaManager* m_ollamaManager = nullptr;
+    QTimer*               m_retryTimer    = nullptr;
+    int                   m_retryCount    = 0;
 
     // Stats panel labels — last turn
     QLabel* m_lblTurnInput;

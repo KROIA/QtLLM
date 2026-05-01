@@ -17,5 +17,6 @@
 #include "UsageStats.h"
 #include "Tool.h"
 #include "Client.h"
+#include "OllamaManager.h"
 
 /// USER_SECTION_END
