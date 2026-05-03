@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QTimer>
 
 static void initClient(QtLLM::Client& client)
 {
@@ -198,6 +199,25 @@ void ChatWindow::registerTools()
         appendNote(QString("Window title set to: \"%1\"").arg(title));
         return QJsonObject{{"success", true}, {"title", title}};
     });
+
+
+    // Timer tool
+	QtLLM::Tool timerTool;
+    timerTool.setName("timer")
+              .setDescription("Sets a timer that will go off after a specified number of milliseconds. ")
+		      .addParameter("duration", "integer", "The timer duration in milliseconds.", true)
+	          .addParameter("id", "string", "An ID for the timer instance that gets sent as a response to the model when the timer has finished. Make an ID up.", true);
+    m_client.registerTool(timerTool, [this](const QJsonObject& args) -> QJsonObject {
+        int duration = args["duration"].toInt();
+        QString id = args["id"].toString();
+        QTimer::singleShot(duration, [this, id, duration]() {
+            appendNote(QString("Timer \"%1\" finished after %2 ms").arg(id).arg(duration));
+            // Send a message back to the model when the timer finishes
+            m_client.sendToolMessage("timer", {{"id", id}});
+        });
+        appendNote(QString("Timer \"%1\" set for %2 ms").arg(id).arg(duration));
+        return QJsonObject{{"success", true}, {"id", id}, {"duration", duration}};
+		});
 }
 
 void ChatWindow::connectSignals()

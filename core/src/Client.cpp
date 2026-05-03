@@ -129,6 +129,25 @@ void Client::sendPrompt(const QString& userMessage)
     m_protocol->beginTurn(userMessage);
 }
 
+void Client::sendToolMessage(const QString& toolName, const QJsonObject& input)
+{
+    if (!m_tools.contains(toolName)) {
+        qWarning() << "Attempted to send message for unregistered tool:" << toolName;
+        return;
+    }
+
+	
+    QJsonObject msg;
+    msg["role"]    = "tool";
+    msg["tool"]    = toolName;
+    msg["content"] = input;
+
+    QJsonDocument doc(msg);
+    m_history.append(msg);
+	QString serializedMsg = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+	m_protocol->beginTurn(serializedMsg);
+}
+
 void Client::clearConversation()
 {
     m_history = QJsonArray();

@@ -58,6 +58,8 @@ public:
     // Appends userMessage to history and sends the full conversation to the API.
     void sendPrompt(const QString& userMessage);
 
+	void sendToolMessage(const QString& toolName, const QJsonObject& input);
+
     // Clears conversation history and resets session statistics. Preserves registered tools and settings.
     void clearConversation();
 
