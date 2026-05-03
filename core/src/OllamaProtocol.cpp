@@ -46,6 +46,16 @@ void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void OllamaProtocol::beginTurn(const QString& userMessage)
 {
+    if (m_turnInProgress) {
+        m_pendingTurns.enqueue(userMessage);
+        return;
+    }
+    startNewTurn(userMessage);
+}
+
+void OllamaProtocol::startNewTurn(const QString& userMessage)
+{
+    m_turnInProgress   = true;
     m_turnInputTokens  = 0;
     m_turnOutputTokens = 0;
     m_turnToolCalls    = 0;
@@ -56,6 +66,13 @@ void OllamaProtocol::beginTurn(const QString& userMessage)
     msg["content"] = userMessage;
     m_history.append(msg);
     sendRequest();
+}
+
+void OllamaProtocol::drainQueue()
+{
+    m_turnInProgress = false;
+    if (!m_pendingTurns.isEmpty())
+        startNewTurn(m_pendingTurns.dequeue());
 }
 
 void OllamaProtocol::sendRequest()
@@ -125,6 +142,7 @@ void OllamaProtocol::onReplyReceived(const QByteArray& data)
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
         emit errorOccurred("Failed to parse Ollama response");
+        drainQueue();
         return;
     }
 
@@ -133,6 +151,7 @@ void OllamaProtocol::onReplyReceived(const QByteArray& data)
     if (root.contains("error")) {
         emit errorOccurred(root["error"].toString());
         emit requestFinished();
+        drainQueue();
         return;
     }
 
@@ -187,6 +206,7 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
     emit requestFinished();
     emit responseReady(text);
     emit statsReady(stats);
+    drainQueue();
 }
 
 void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
@@ -242,6 +262,7 @@ void OllamaProtocol::onTransportError(const QString& message)
 {
     emit errorOccurred(message);
     emit requestFinished();
+    drainQueue();
 }
 
 } // namespace QtLLM

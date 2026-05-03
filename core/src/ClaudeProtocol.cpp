@@ -54,7 +54,16 @@ void ClaudeProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void ClaudeProtocol::beginTurn(const QString& userMessage)
 {
-    // Reset per-turn accumulators
+    if (m_turnInProgress) {
+        m_pendingTurns.enqueue(userMessage);
+        return;
+    }
+    startNewTurn(userMessage);
+}
+
+void ClaudeProtocol::startNewTurn(const QString& userMessage)
+{
+    m_turnInProgress   = true;
     m_turnInputTokens  = 0;
     m_turnOutputTokens = 0;
     m_turnToolCalls    = 0;
@@ -65,6 +74,13 @@ void ClaudeProtocol::beginTurn(const QString& userMessage)
     msg["content"] = userMessage;
     m_history.append(msg);
     sendRequest();
+}
+
+void ClaudeProtocol::drainQueue()
+{
+    m_turnInProgress = false;
+    if (!m_pendingTurns.isEmpty())
+        startNewTurn(m_pendingTurns.dequeue());
 }
 
 void ClaudeProtocol::sendRequest()
@@ -125,6 +141,7 @@ void ClaudeProtocol::onReplyReceived(const QByteArray& data)
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
         emit errorOccurred("Failed to parse API response");
+        drainQueue();
         return;
     }
 
@@ -134,6 +151,7 @@ void ClaudeProtocol::onReplyReceived(const QByteArray& data)
         QString message = root["error"].toObject()["message"].toString();
         emit errorOccurred(message);
         emit requestFinished();
+        drainQueue();
         return;
     }
 
@@ -183,6 +201,7 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         emit requestFinished();
         emit responseReady(text);
         emit statsReady(stats);
+        drainQueue();
         return;
     }
 
@@ -277,6 +296,7 @@ void ClaudeProtocol::onTransportError(const QString& message)
 {
     emit errorOccurred(message);
     emit requestFinished();
+    drainQueue();
 }
 
 } // namespace QtLLM

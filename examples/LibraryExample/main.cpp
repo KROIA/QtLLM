@@ -6,11 +6,13 @@
 #define DEMO_ANTHROPIC_FOUNDRY 1
 #define DEMO_OLLAMA 2
 
-#define USED_DEMO DEMO_OLLAMA
+#define USED_DEMO DEMO_ANTHROPIC_FOUNDRY
 
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+	QtLLM::Profiler::start();
+    Log::UI::createConsoleView(Log::UI::ConsoleViewType::nativeConsoleView);
 
 #if USED_DEMO == DEMO_ANTHROPIC_FOUNDRY
     QString apiKey  = QString::fromUtf8(qgetenv("ANTHROPIC_FOUNDRY_API_KEY"));
@@ -32,5 +34,7 @@ int main(int argc, char* argv[])
 #endif
     window.show();
 
-    return app.exec();
+    int ret = app.exec();
+    QtLLM::Profiler::stop("LibraryExample.prof");
+    return ret;
 }

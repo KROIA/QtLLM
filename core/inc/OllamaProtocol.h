@@ -3,6 +3,7 @@
 #include "ProtocolBase.h"
 #include "HttpTransport.h"
 #include <QUrl>
+#include <QQueue>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
@@ -33,6 +34,8 @@ private slots:
     void onTransportError(const QString& message);
 
 private:
+    void        startNewTurn(const QString& userMessage);
+    void        drainQueue();
     QJsonObject buildRequestBody() const;
     void        processResponse(const QJsonObject& responseJson);
     void        executeToolCalls(const QJsonArray& toolCalls);
@@ -46,6 +49,10 @@ private:
     QMap<QString, ToolHandler> m_toolHandlers;
     QJsonArray                 m_history;
     HttpTransport*             m_transport;
+
+    // Turn serialization queue
+    bool            m_turnInProgress{false};
+    QQueue<QString> m_pendingTurns;
 
     // Stats tracking
     QElapsedTimer m_turnTimer;

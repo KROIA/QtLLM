@@ -87,6 +87,7 @@ signals:
 private slots:
     void onProtocolResponseReady(const QString& text);
     void onProtocolStatsReady(const QtLLM::UsageStats& stats);
+    void onProtocolError(const QString& errorMessage);
 
 private:
     void connectProtocol();
@@ -102,6 +103,10 @@ private:
     QJsonArray                    m_history;
     ProtocolBase*                 m_protocol;
     UsageStats                    m_lastStats;
+
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    Log::LogObject m_logger{Logger::getID(), "QtLLM::Client"};
+#endif
 };
 
 } // namespace QtLLM

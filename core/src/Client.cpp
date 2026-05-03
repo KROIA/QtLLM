@@ -38,13 +38,17 @@ void Client::connectProtocol()
     connect(m_protocol, &ProtocolBase::statsReady,      this, &Client::onProtocolStatsReady);
     connect(m_protocol, &ProtocolBase::toolInvoked,     this, &Client::toolInvoked);
     connect(m_protocol, &ProtocolBase::toolCompleted,   this, &Client::toolCompleted);
-    connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::errorOccurred);
+    connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::onProtocolError);
     connect(m_protocol, &ProtocolBase::requestStarted,  this, &Client::requestStarted);
     connect(m_protocol, &ProtocolBase::requestFinished, this, &Client::requestFinished);
 }
 
 void Client::onProtocolResponseReady(const QString& text)
 {
+    QLLM_GENERAL_PROFILING_FUNCTION(QLLM_COLOR_STAGE_2)
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logInfo("Response received (" + std::to_string(text.size()) + " chars)");
+#endif
     QJsonObject msg;
     msg["role"]    = "assistant";
     msg["content"] = text;
@@ -54,8 +58,23 @@ void Client::onProtocolResponseReady(const QString& text)
 
 void Client::onProtocolStatsReady(const QtLLM::UsageStats& stats)
 {
+    QLLM_GENERAL_PROFILING_FUNCTION(QLLM_COLOR_STAGE_2)
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logDebug("Turn stats: in=" + std::to_string(stats.inputTokens)
+                    + " out=" + std::to_string(stats.outputTokens)
+                    + " tools=" + std::to_string(stats.toolCalls)
+                    + " ms=" + std::to_string(stats.durationMs));
+#endif
     m_lastStats = stats;
     emit statsUpdated(stats);
+}
+
+void Client::onProtocolError(const QString& errorMessage)
+{
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logError(errorMessage.toStdString());
+#endif
+    emit errorOccurred(errorMessage);
 }
 
 void Client::setModel(const QString& model)       { m_protocol->setModel(model); }
@@ -64,6 +83,9 @@ void Client::setSystemPrompt(const QString& p)     { m_protocol->setSystemPrompt
 
 void Client::registerTool(const Tool& tool, ToolHandler handler)
 {
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logDebug("Register tool: " + tool.name().toStdString());
+#endif
     RegisteredTool rt;
     rt.claudeSchema = tool.toApiObject();
     rt.openAiSchema = tool.toOpenAiApiObject();
@@ -102,6 +124,9 @@ void Client::registerTool(const QString& name,
 
 void Client::unregisterTool(const QString& toolName)
 {
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logDebug("Unregister tool: " + toolName.toStdString());
+#endif
     m_tools.remove(toolName);
     syncToolsToProtocol();
 }
@@ -122,6 +147,10 @@ void Client::syncToolsToProtocol()
 
 void Client::sendPrompt(const QString& userMessage)
 {
+    QLLM_GENERAL_PROFILING_FUNCTION(QLLM_COLOR_STAGE_1)
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logInfo("sendPrompt (" + std::to_string(userMessage.size()) + " chars)");
+#endif
     QJsonObject msg;
     msg["role"]    = "user";
     msg["content"] = userMessage;
@@ -131,21 +160,23 @@ void Client::sendPrompt(const QString& userMessage)
 
 void Client::sendToolMessage(const QString& toolName, const QJsonObject& input)
 {
+    QLLM_GENERAL_PROFILING_FUNCTION(QLLM_COLOR_STAGE_1)
     if (!m_tools.contains(toolName)) {
+#if LOGGER_LIBRARY_AVAILABLE == 1
+        m_logger.logWarning("sendToolMessage: unregistered tool \"" + toolName.toStdString() + "\"");
+#endif
         qWarning() << "Attempted to send message for unregistered tool:" << toolName;
         return;
     }
-
-	
-    QJsonObject msg;
-    msg["role"]    = "tool";
-    msg["tool"]    = toolName;
-    msg["content"] = input;
-
-    QJsonDocument doc(msg);
-    m_history.append(msg);
-	QString serializedMsg = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
-	m_protocol->beginTurn(serializedMsg);
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logInfo("Async tool callback: " + toolName.toStdString());
+#endif
+    // Async tool completion arrives as a new user turn since its tool_use/tool_result
+    // cycle already closed synchronously. Format it as a readable notification.
+    QString payload = QString::fromUtf8(
+        QJsonDocument(input).toJson(QJsonDocument::Compact));
+    QString notification = QString("[%1 completed] %2").arg(toolName, payload);
+    m_protocol->beginTurn(notification);
 }
 
 void Client::clearConversation()
