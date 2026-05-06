@@ -126,7 +126,11 @@
       "Bash(cmd /c \"\\\\\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\\\\" && cd \\\\\"C:\\\\Users\\\\KRIA\\\\Documents\\\\Visual Studio 2022\\\\Projects\\\\QtLLM\\\\\" && cmake --build build/x64-Debug 2>&1\")",
       "Bash(cmd /c \"\\\\\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\\\\" && cmake --build \\\\\"C:\\\\Users\\\\KRIA\\\\Documents\\\\Visual Studio 2022\\\\Projects\\\\QtLLM\\\\build\\\\x64-Debug\\\\\"\")",
       "Bash(cmd *)",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(\"C:/Program Files/Git/bin/bash.exe\" /c/Users/KRIA/.claude/statusline-command.sh)",
+      "Bash(C:/Program Files/Git/bin/bash.exe *)"
     ],
     "deny": [
       "Bash(git push)",
