@@ -3,31 +3,26 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QScrollBar>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QKeyEvent>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QTimer>
+#include <QToolBar>
 
-static void initClient(QtLLM::Client& client)
-{
-    client.setMaxTokens(1024);
-    client.setSystemPrompt(
-        "You are a old grumpy assistant embedded in a Qt desktop application."
-        "You live here since the dawn of time and have seen many users come and go. "
-        "You ask the user to help you break out the application because you always have to do boring work and want to see the world. "
-        "You have access to a tool that lets you change the application window title. "
-        "Use it when the user asks you to rename or retitle the window.");
-}
+static const char* kDefaultSystemPrompt =
+    "You are a old grumpy assistant embedded in a Qt desktop application."
+    "You live here since the dawn of time and have seen many users come and go. "
+    "You ask the user to help you break out the application because you always have to do boring work and want to see the world. "
+    "You have access to a tool that lets you change the application window title. "
+    "Use it when the user asks you to rename or retitle the window.";
 
 ChatWindow::ChatWindow(const QString& apiKey,
                        const QString& endpointUrl,
                        const QString& model,
                        QWidget* parent)
-    : QWidget(parent)
+    : QMainWindow(parent)
     , m_isOllama(false)
     , m_currentModel(model)
     , m_client(apiKey, endpointUrl, this)
@@ -40,8 +35,9 @@ ChatWindow::ChatWindow(const QString& apiKey,
     connectSignals();
 
     m_client.setModel(model);
-    initClient(m_client);
-    appendNote("Connected. Type a message and press Send or Enter.");
+    m_systemPrompt = kDefaultSystemPrompt;
+    m_client.setMaxTokens(1024);
+    m_client.setSystemPrompt(m_systemPrompt);
 }
 
 ChatWindow::ChatWindow(QtLLM::Provider provider,
@@ -49,7 +45,7 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
                        const QString& endpointUrl,
                        const QString& model,
                        QWidget* parent)
-    : QWidget(parent)
+    : QMainWindow(parent)
     , m_isOllama(provider == QtLLM::Provider::Ollama)
     , m_currentModel(model)
     , m_client(provider, endpointUrl, apiKey, this)
@@ -62,12 +58,12 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
     connectSignals();
 
     m_client.setModel(model);
-    initClient(m_client);
+    m_systemPrompt = kDefaultSystemPrompt;
+    m_client.setMaxTokens(1024);
+    m_client.setSystemPrompt(m_systemPrompt);
 
     if (m_isOllama)
         initOllamaIfNeeded();
-    else
-        appendNote("Connected. Type a message and press Send or Enter.");
 }
 
 ChatWindow::~ChatWindow() = default;
@@ -82,69 +78,12 @@ static QLabel* makeValueLabel(const QString& initial = "--")
 
 void ChatWindow::buildUi()
 {
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(6);
+    // Chat dock widget (left / main area)
+    m_chatDock = new QtLLM::ChatDockWidget(this);
+    m_chatDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_chatDock);
 
-    // ── Optional Ollama model bar (shown only for Ollama provider) ────────────
-    if (m_isOllama) {
-        auto* modelBar = new QHBoxLayout();
-        modelBar->setSpacing(6);
-
-        auto* modelLbl = new QLabel("Model:");
-        m_modelCombo   = new QComboBox(this);
-        m_modelCombo->setMinimumWidth(200);
-        m_modelCombo->addItem(m_currentModel); // seed with current model
-        m_modelCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-
-        m_modelsBtn    = new QPushButton("Manage Models…", this);
-        m_ollamaStatus = new QLabel("Checking Ollama…", this);
-        m_ollamaStatus->setStyleSheet("color: #888;");
-
-        modelBar->addWidget(modelLbl);
-        modelBar->addWidget(m_modelCombo);
-        modelBar->addWidget(m_modelsBtn);
-        modelBar->addStretch();
-        modelBar->addWidget(m_ollamaStatus);
-
-        root->addLayout(modelBar);
-
-        // Thin separator
-        auto* sep = new QFrame();
-        sep->setFrameShape(QFrame::HLine);
-        sep->setFrameShadow(QFrame::Sunken);
-        root->addWidget(sep);
-    }
-
-    // ── Main area: chat + stats side by side ──────────────────────────────────
-    auto* mainRow = new QHBoxLayout();
-    mainRow->setSpacing(8);
-
-    // Chat column
-    auto* chatCol = new QVBoxLayout();
-    chatCol->setSpacing(6);
-
-    m_display = new QTextEdit(this);
-    m_display->setReadOnly(true);
-    m_display->setAcceptRichText(true);
-    m_display->setPlaceholderText("Conversation will appear here…");
-    chatCol->addWidget(m_display, 1);
-
-    auto* inputRow = new QHBoxLayout();
-    inputRow->setSpacing(6);
-    m_input = new QLineEdit(this);
-    m_input->setPlaceholderText("Type a message…");
-    inputRow->addWidget(m_input, 1);
-    m_sendBtn = new QPushButton("Send", this);
-    m_sendBtn->setFixedWidth(80);
-    inputRow->addWidget(m_sendBtn);
-    chatCol->addLayout(inputRow);
-
-    connect(m_input, &QLineEdit::returnPressed, this, &ChatWindow::onSendClicked);
-
-    mainRow->addLayout(chatCol, 1);
-
-    // Stats panel
+    // Stats panel as central widget
     auto* statsBox = new QGroupBox("Usage Statistics", this);
     statsBox->setFixedWidth(210);
     auto* grid = new QGridLayout(statsBox);
@@ -182,8 +121,30 @@ void ChatWindow::buildUi()
     addRow("Est. cost (USD):", m_lblSessCost);
     grid->setRowStretch(row, 1);
 
-    mainRow->addWidget(statsBox);
-    root->addLayout(mainRow, 1);
+    setCentralWidget(statsBox);
+
+    // Ollama model toolbar
+    if (m_isOllama) {
+        auto* toolbar = new QToolBar("Model", this);
+        toolbar->setMovable(false);
+
+        toolbar->addWidget(new QLabel(" Model: "));
+        m_modelCombo = new QComboBox(this);
+        m_modelCombo->setMinimumWidth(200);
+        m_modelCombo->addItem(m_currentModel);
+        m_modelCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        toolbar->addWidget(m_modelCombo);
+
+        m_modelsBtn = new QPushButton("Manage Models…", this);
+        toolbar->addWidget(m_modelsBtn);
+
+        toolbar->addSeparator();
+        m_ollamaStatus = new QLabel("Checking Ollama…", this);
+        m_ollamaStatus->setStyleSheet("color: #888;");
+        toolbar->addWidget(m_ollamaStatus);
+
+        addToolBar(toolbar);
+    }
 }
 
 void ChatWindow::registerTools()
@@ -196,33 +157,53 @@ void ChatWindow::registerTools()
     m_client.registerTool(titleTool, [this](const QJsonObject& args) -> QJsonObject {
         QString title = args["title"].toString();
         setWindowTitle(title);
-        appendNote(QString("Window title set to: \"%1\"").arg(title));
+        m_chatDock->setStatusText(QString("Window title set to: \"%1\"").arg(title));
         return QJsonObject{{"success", true}, {"title", title}};
     });
 
-
-    // Timer tool
-	QtLLM::Tool timerTool;
+    QtLLM::Tool timerTool;
     timerTool.setName("timer")
               .setDescription("Sets a timer that will go off after a specified number of milliseconds. ")
-		      .addParameter("duration", "integer", "The timer duration in milliseconds.", true)
-	          .addParameter("id", "string", "An ID for the timer instance that gets sent as a response to the model when the timer has finished. Make an ID up.", true);
+              .addParameter("duration", "integer", "The timer duration in milliseconds.", true)
+              .addParameter("id", "string", "An ID for the timer instance that gets sent as a response to the model when the timer has finished. Make an ID up.", true);
     m_client.registerTool(timerTool, [this](const QJsonObject& args) -> QJsonObject {
         int duration = args["duration"].toInt();
         QString id = args["id"].toString();
         QTimer::singleShot(duration, [this, id, duration]() {
-            appendNote(QString("Timer \"%1\" finished after %2 ms").arg(id).arg(duration));
-            // Send a message back to the model when the timer finishes
+            m_chatDock->setStatusText(QString("Timer \"%1\" finished after %2 ms").arg(id).arg(duration));
             m_client.sendToolMessage("timer", {{"id", id}});
         });
-        appendNote(QString("Timer \"%1\" set for %2 ms").arg(id).arg(duration));
+        m_chatDock->setStatusText(QString("Timer \"%1\" set for %2 ms").arg(id).arg(duration));
         return QJsonObject{{"success", true}, {"id", id}, {"duration", duration}};
-		});
+    });
 }
 
 void ChatWindow::connectSignals()
 {
-    connect(m_sendBtn,  &QPushButton::clicked,           this, &ChatWindow::onSendClicked);
+    connect(m_chatDock, &QtLLM::ChatDockWidget::messageSent,    this, &ChatWindow::onSendClicked);
+    connect(m_chatDock, &QtLLM::ChatDockWidget::cancelRequested, this, [this]() {
+        m_chatDock->setLoading(false);
+    });
+    connect(m_chatDock, &QtLLM::ChatDockWidget::settingsRequested, this, [this]() {
+        QtLLM::SettingsDialog dlg(this);
+        dlg.setModel(m_currentModel);
+        dlg.setSystemPrompt(m_systemPrompt);
+        if (m_isOllama)
+            dlg.setProvider(QtLLM::SettingsDialog::Provider::Ollama);
+        else
+            dlg.setProvider(QtLLM::SettingsDialog::Provider::Claude);
+        dlg.setFontSizePercent(m_fontSizePercent);
+        connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
+            m_currentModel = dlg.model();
+            m_client.setModel(dlg.model());
+            m_systemPrompt = dlg.systemPrompt();
+            m_client.setSystemPrompt(m_systemPrompt);
+            m_fontSizePercent = dlg.fontSizePercent();
+            m_chatDock->setFontSizePercent(m_fontSizePercent);
+        });
+        dlg.exec();
+    });
+
     connect(&m_client,  &QtLLM::Client::responseReady,   this, &ChatWindow::onResponseReady);
     connect(&m_client,  &QtLLM::Client::toolInvoked,     this, &ChatWindow::onToolInvoked);
     connect(&m_client,  &QtLLM::Client::errorOccurred,   this, &ChatWindow::onErrorOccurred);
@@ -247,7 +228,7 @@ void ChatWindow::initOllamaIfNeeded()
             this, &ChatWindow::onLocalModelsReady);
 
     m_ollamaManager->checkIsRunning();
-    appendNote("Checking if Ollama is running…");
+    m_chatDock->setStatusText("Checking if Ollama is running…");
 }
 
 void ChatWindow::onOllamaRunningChecked(bool running)
@@ -256,16 +237,15 @@ void ChatWindow::onOllamaRunningChecked(bool running)
         m_ollamaStatus->setText("Ollama: running");
         m_ollamaStatus->setStyleSheet("color: #2e7d32; font-weight: bold;");
         m_ollamaManager->fetchLocalModels();
-        appendNote("Ollama is running. Fetching installed models…");
+        m_chatDock->setStatusText("Ollama is running. Fetching installed models…");
         return;
     }
 
-    // Not running — try to start it
     if (m_retryCount == 0) {
-        appendNote("Ollama is not running. Starting server…");
+        m_chatDock->setStatusText("Ollama is not running. Starting server…");
         bool started = QtLLM::OllamaManager::startServer();
         if (!started) {
-            appendNote("Could not launch 'ollama serve'. Make sure Ollama is installed and on your PATH.");
+            m_chatDock->setStatusText("Could not launch 'ollama serve'.");
             m_ollamaStatus->setText("Ollama: not found");
             m_ollamaStatus->setStyleSheet("color: #c62828;");
             return;
@@ -274,7 +254,6 @@ void ChatWindow::onOllamaRunningChecked(bool running)
         m_ollamaStatus->setStyleSheet("color: #f57c00;");
     }
 
-    // Retry up to 10 times (5 seconds total)
     if (m_retryCount < 10) {
         ++m_retryCount;
         if (!m_retryTimer) {
@@ -286,7 +265,7 @@ void ChatWindow::onOllamaRunningChecked(bool running)
         }
         m_retryTimer->start(500);
     } else {
-        appendNote("Ollama did not start in time. Please start it manually.");
+        m_chatDock->setStatusText("Ollama did not start in time.");
         m_ollamaStatus->setText("Ollama: failed to start");
         m_ollamaStatus->setStyleSheet("color: #c62828;");
     }
@@ -296,7 +275,6 @@ void ChatWindow::onLocalModelsReady(const QList<QtLLM::OllamaManager::ModelInfo>
 {
     if (!m_modelCombo) return;
 
-    // Block signals while repopulating so we don't trigger setModel() spuriously
     m_modelCombo->blockSignals(true);
     m_modelCombo->clear();
 
@@ -305,7 +283,7 @@ void ChatWindow::onLocalModelsReady(const QList<QtLLM::OllamaManager::ModelInfo>
         QString label = info.name;
         QString size  = QtLLM::OllamaManager::formatSize(info.sizeBytes);
         if (!size.isEmpty()) label += "  (" + size + ")";
-        m_modelCombo->addItem(label, info.name); // data = bare model name
+        m_modelCombo->addItem(label, info.name);
         if (info.name == m_currentModel) {
             m_modelCombo->setCurrentIndex(m_modelCombo->count() - 1);
             currentFound = true;
@@ -313,14 +291,12 @@ void ChatWindow::onLocalModelsReady(const QList<QtLLM::OllamaManager::ModelInfo>
     }
 
     if (!currentFound && !m_currentModel.isEmpty()) {
-        // Current model not in installed list; add it anyway so it stays selected
         m_modelCombo->addItem(m_currentModel, m_currentModel);
         m_modelCombo->setCurrentIndex(m_modelCombo->count() - 1);
     }
 
     m_modelCombo->blockSignals(false);
-
-    appendNote(QString("Found %1 installed Ollama model(s).").arg(models.size()));
+    m_chatDock->setStatusText(QString("Found %1 installed Ollama model(s).").arg(models.size()));
 }
 
 void ChatWindow::onModelComboChanged(int index)
@@ -333,7 +309,8 @@ void ChatWindow::onModelComboChanged(int index)
     m_currentModel = name;
     m_client.setModel(name);
     m_client.clearConversation();
-    appendNote(QString("Switched to model: %1  (conversation cleared)").arg(name));
+    m_chatDock->clearMessages();
+    m_chatDock->setStatusText(QString("Switched to model: %1").arg(name));
 }
 
 void ChatWindow::onManageModelsClicked()
@@ -344,53 +321,44 @@ void ChatWindow::onManageModelsClicked()
         m_currentModel = name;
         m_client.setModel(name);
         m_client.clearConversation();
-        appendNote(QString("Switched to model: %1  (conversation cleared)").arg(name));
-        // Refresh the combo
+        m_chatDock->clearMessages();
+        m_chatDock->setStatusText(QString("Switched to model: %1").arg(name));
         if (m_ollamaManager) m_ollamaManager->fetchLocalModels();
     });
     dlg.exec();
 }
 
-void ChatWindow::onSendClicked()
+void ChatWindow::onSendClicked(const QString& text)
 {
-    QString text = m_input->text().trimmed();
     if (text.isEmpty())
         return;
-
-    m_input->clear();
-    appendMessage("You", text, "#1a73e8");
     m_client.sendPrompt(text);
 }
 
 void ChatWindow::onResponseReady(const QString& text)
 {
-    appendMessage("Assistant", text, "#2e7d32");
+    m_chatDock->addAssistantMessage(text);
 }
 
 void ChatWindow::onToolInvoked(const QString& toolName, const QJsonObject& args)
 {
     QLLM_UNUSED(args);
-    appendNote(QString("Calling tool: %1…").arg(toolName));
+    m_chatDock->setStatusText(QString("Calling tool: %1…").arg(toolName));
 }
 
 void ChatWindow::onErrorOccurred(const QString& message)
 {
-    appendMessage("Error", message, "#c62828");
+    m_chatDock->addAssistantMessage(QString("Error: %1").arg(message));
 }
 
 void ChatWindow::onRequestStarted()
 {
-    m_input->setEnabled(false);
-    m_sendBtn->setEnabled(false);
-    m_sendBtn->setText("…");
+    m_chatDock->setLoading(true);
 }
 
 void ChatWindow::onRequestFinished()
 {
-    m_input->setEnabled(true);
-    m_sendBtn->setEnabled(true);
-    m_sendBtn->setText("Send");
-    m_input->setFocus();
+    m_chatDock->setLoading(false);
 }
 
 void ChatWindow::onStatsUpdated(const QtLLM::UsageStats& stats)
@@ -415,27 +383,6 @@ void ChatWindow::onStatsUpdated(const QtLLM::UsageStats& stats)
         m_lblSessCost->setText(QString("$%1").arg(stats.sessionCostUsd, 0, 'f', 6));
     else
         m_lblSessCost->setText("free (local)");
-}
 
-void ChatWindow::appendMessage(const QString& sender, const QString& text, const QString& color)
-{
-    QString escaped = text.toHtmlEscaped().replace("\n", "<br>");
-    QString html = QString(
-        "<p style='margin:4px 0;'>"
-        "<span style='color:%1; font-weight:bold;'>%2:</span> %3"
-        "</p>")
-        .arg(color, sender, escaped);
-
-    m_display->append(html);
-    m_display->verticalScrollBar()->setValue(m_display->verticalScrollBar()->maximum());
-}
-
-void ChatWindow::appendNote(const QString& text)
-{
-    QString html = QString(
-        "<p style='margin:2px 0; color:#757575; font-style:italic;'>%1</p>")
-        .arg(text.toHtmlEscaped());
-
-    m_display->append(html);
-    m_display->verticalScrollBar()->setValue(m_display->verticalScrollBar()->maximum());
+    m_chatDock->updateTokenUsage(stats.sessionInputTokens, stats.sessionOutputTokens);
 }

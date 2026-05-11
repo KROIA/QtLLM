@@ -18,5 +18,7 @@
 #include "Tool.h"
 #include "Client.h"
 #include "OllamaManager.h"
+#include "ChatDockWidget.h"
+#include "SettingsDialog.h"
 
 /// USER_SECTION_END
