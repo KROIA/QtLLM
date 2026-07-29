@@ -116,19 +116,39 @@ function(windeployqt targetName outputPath)
     if(TARGET ${targetName})
         get_target_property(_wdq_target_src_dir ${targetName} SOURCE_DIR)
         if(_wdq_target_src_dir STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
-            add_custom_command(TARGET ${targetName} POST_BUILD
-                COMMAND "${QT_PATH}/bin/windeployqt.exe"
-                        --force
-                        --no-compiler-runtime
-                        --translations de,en
-                        --no-system-d3d-compiler
-                        --no-opengl-sw
-                        --pdb
-                        --qmldir "${CMAKE_SOURCE_DIR}"
-                        --dir "$<TARGET_FILE_DIR:${targetName}>"
-                        "$<TARGET_FILE:${targetName}>"
-                COMMENT "Deploying Qt runtime alongside ${targetName}"
-                VERBATIM)
+            # Sharing-violation guard: sibling exes typically share the same
+            # runtime output directory (CMAKE_RUNTIME_OUTPUT_DIRECTORY). If we
+            # attach a POST_BUILD windeployqt to every one of them, Ninja fires
+            # multiple instances in parallel that all try to overwrite the same
+            # Qt5*.dll/.pdb — one succeeds, the others fail with
+            # "Cannot remove existing file ...: used by another process".
+            # Register the deploy on the FIRST caller per runtime dir only;
+            # siblings piggy-back on that single deploy.
+            get_target_property(_wdq_runtime_dir ${targetName} RUNTIME_OUTPUT_DIRECTORY)
+            if(NOT _wdq_runtime_dir)
+                set(_wdq_runtime_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+            endif()
+            set(_wdq_key "_WDQ_DEPLOYED::${_wdq_runtime_dir}")
+            get_property(_wdq_already_registered GLOBAL PROPERTY "${_wdq_key}")
+            if(NOT _wdq_already_registered)
+                set_property(GLOBAL PROPERTY "${_wdq_key}" 1)
+                add_custom_command(TARGET ${targetName} POST_BUILD
+                    COMMAND "${QT_PATH}/bin/windeployqt.exe"
+                            --force
+                            --no-compiler-runtime
+                            --translations de,en
+                            --no-system-d3d-compiler
+                            --no-opengl-sw
+                            --pdb
+                            --qmldir "${CMAKE_SOURCE_DIR}"
+                            --dir "$<TARGET_FILE_DIR:${targetName}>"
+                            "$<TARGET_FILE:${targetName}>"
+                    COMMENT "Deploying Qt runtime alongside ${targetName} (shared with siblings in the same runtime dir)"
+                    VERBATIM)
+            endif()
+            unset(_wdq_runtime_dir)
+            unset(_wdq_key)
+            unset(_wdq_already_registered)
         endif()
         unset(_wdq_target_src_dir)
     endif()
