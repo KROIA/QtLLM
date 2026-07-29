@@ -118,6 +118,7 @@ function(windeployqt targetName outputPath)
         if(_wdq_target_src_dir STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
             add_custom_command(TARGET ${targetName} POST_BUILD
                 COMMAND "${QT_PATH}/bin/windeployqt.exe"
+                        --force
                         --no-compiler-runtime
                         --translations de,en
                         --no-system-d3d-compiler
@@ -134,6 +135,7 @@ function(windeployqt targetName outputPath)
 
     set(targetExePath "${outputPath}/${targetName}.exe")
     set(DEPLOY_COMMAND  "${QT_PATH}/bin/windeployqt.exe
+		--force
 		--no-compiler-runtime
 		--translations de,en
 		--no-system-d3d-compiler
