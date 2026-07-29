@@ -1,5 +1,22 @@
 {
-    "version": 3,
+    "buildPresets": [
+        {
+            "configurePreset": "x64-Debug",
+            "name": "x64-Debug"
+        },
+        {
+            "configurePreset": "x64-Release",
+            "name": "x64-Release"
+        },
+        {
+            "configurePreset": "x64-Debug-Profile",
+            "name": "x64-Debug-Profile"
+        },
+        {
+            "configurePreset": "x64-Release-Profile",
+            "name": "x64-Release-Profile"
+        }
+    ],
     "cmakeMinimumRequired": {
         "major": 3,
         "minor": 20,
@@ -7,70 +24,60 @@
     },
     "configurePresets": [
         {
-            "name": "base",
-            "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/${presetName}",
             "architecture": {
-                "value": "x64",
-                "strategy": "external"
+                "strategy": "external",
+                "value": "x64"
             },
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "/EHsc",
+                "CMAKE_C_FLAGS": "/EHsc",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/installation",
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+                "QT_DEPLOY": "ON"
+            },
+            "generator": "Ninja",
+            "hidden": true,
+            "name": "base",
             "toolset": {
-                "value": "host=x64",
-                "strategy": "external"
+                "strategy": "external",
+                "value": "host=x64"
             }
         },
         {
-            "name": "x64-Debug",
-            "displayName": "x64 Debug",
-            "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
-            }
+            },
+            "displayName": "x64 Debug",
+            "inherits": "base",
+            "name": "x64-Debug"
         },
         {
-            "name": "x64-Release",
-            "displayName": "x64 Release",
-            "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
-            }
+            },
+            "displayName": "x64 Release",
+            "inherits": "base",
+            "name": "x64-Release"
         },
         {
-            "name": "x64-Debug-Profile",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QLLM_PROFILING": "1"
+            },
             "displayName": "x64 Debug (Profiling)",
             "inherits": "base",
-          "cacheVariables": {
-            "CMAKE_BUILD_TYPE": "Debug",
-            "QLLM_PROFILING": "1"
-          }
+            "name": "x64-Debug-Profile"
         },
         {
-            "name": "x64-Release-Profile",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "QLLM_PROFILING": "1"
+            },
             "displayName": "x64 Release (Profiling)",
             "inherits": "base",
-          "cacheVariables": {
-            "CMAKE_BUILD_TYPE": "Release",
-            "QLLM_PROFILING": "1"
-          }
+            "name": "x64-Release-Profile"
         }
     ],
-    "buildPresets": [
-        {
-            "name": "x64-Debug",
-            "configurePreset": "x64-Debug"
-        },
-        {
-            "name": "x64-Release",
-            "configurePreset": "x64-Release"
-        },
-        {
-            "name": "x64-Debug-Profile",
-            "configurePreset": "x64-Debug-Profile"
-        },
-        {
-            "name": "x64-Release-Profile",
-            "configurePreset": "x64-Release-Profile"
-        }
-    ]
+    "version": 3
 }

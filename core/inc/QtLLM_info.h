@@ -1,4 +1,4 @@
-// @file LibraryName_info.h
+// @file QtLLM_info.h
 // @brief Compile-time library metadata and version information.
 //
 // LibraryInfo exposes name, version, author, licence, compiler, and build

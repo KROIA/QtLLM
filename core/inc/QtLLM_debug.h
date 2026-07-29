@@ -1,4 +1,4 @@
-// @file LibraryName_debug.h
+// @file QtLLM_debug.h
 // @brief Debug console output, profiling macros, and library-wide Logger.
 //
 // This header provides three facilities:

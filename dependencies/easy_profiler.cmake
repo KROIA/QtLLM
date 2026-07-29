@@ -10,6 +10,10 @@ function(dep LIBRARY_MACRO_NAME SHARED_LIB STATIC_LIB STATIC_PROFILE_LIB INCLUDE
     set(EASY_PROFILER_NO_SAMPLES True)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build easy_profiler as static library.")
 
+    # Allow old CMakeLists.txt to work: suppress the version-too-old error by telling CMake
+    # to interpret cmake_minimum_required(VERSION 3.5) as if it was cmake_minimum_required(VERSION 3.20)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
     # Change the QT version to V5 because easy_profiler is not compatible with QT6
     if(NOT QT_MAJOR_VERSION EQUAL 5)
         set(QT_MAJOR_VERSION 5)

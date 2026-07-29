@@ -135,8 +135,13 @@ target_compile_definitions(${PROJECT_NAME} PUBLIC ${DEFINES})
 install(TARGETS ${PROJECT_NAME} DESTINATION "${INSTALL_BIN_PATH}")
 
 if(QT_ENABLE AND QT_DEPLOY)
+   # Install-time deploy into the install tree.
    windeployqt(${PROJECT_NAME} "${INSTALL_BIN_PATH}")
-   windeployqt(${PROJECT_NAME} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}") # Also deploy on the compile output path
+   # Build-tree deploy is handled by the POST_BUILD step inside windeployqt()
+   # via $<TARGET_FILE_DIR:${targetName}>, which resolves to build/<Config>/ on
+   # multi-config generators. A second install-time call against
+   # CMAKE_RUNTIME_OUTPUT_DIRECTORY would miss the per-config subdir on VS and
+   # print spurious "<exe> does not exist" lines.
 endif()
 
 endfunction()

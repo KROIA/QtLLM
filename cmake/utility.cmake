@@ -31,6 +31,42 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
         "Root folder containing local dependency clones (one sub-folder per LIB_NAME). Absolute or relative to the project root.")
 endif()
 
+# ---------------------------------------------------------------------------
+# Force FetchContent subbuilds to inherit the outer project's generator.
+#
+# Without this, the very first configure runs the subbuild with whatever
+# generator FetchContent picks up implicitly (often Ninja on Windows when
+# ninja is on PATH), and writes CMAKE_GENERATOR:INTERNAL=Ninja into the
+# subbuild's CMakeCache.txt. Any later regenerate (e.g. after editing a
+# header) re-invokes that cached subbuild and CMake aborts with:
+#   "Does not match the generator used previously: Ninja"
+# because the outer build was created with "Visual Studio 17 2022" (or
+# similar). The error recurs on every regenerate until the dependency
+# subbuild caches are wiped manually.
+#
+# FetchContent's subbuild is a real sub-cmake invocation; it picks up
+# these vars from the parent cache when present, so propagating them as
+# CACHE entries fixes the mismatch for every dependency at once.
+# Only the top-level project sets them — when this template is itself a
+# FetchContent dep, the outer project will already have set them.
+# ---------------------------------------------------------------------------
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(CMAKE_GENERATOR "${CMAKE_GENERATOR}" CACHE INTERNAL
+        "Forwarded to FetchContent subbuilds so they match the outer generator")
+    if(CMAKE_GENERATOR_PLATFORM)
+        set(CMAKE_GENERATOR_PLATFORM "${CMAKE_GENERATOR_PLATFORM}" CACHE INTERNAL
+            "Forwarded to FetchContent subbuilds")
+    endif()
+    if(CMAKE_GENERATOR_TOOLSET)
+        set(CMAKE_GENERATOR_TOOLSET "${CMAKE_GENERATOR_TOOLSET}" CACHE INTERNAL
+            "Forwarded to FetchContent subbuilds")
+    endif()
+    if(CMAKE_MAKE_PROGRAM)
+        set(CMAKE_MAKE_PROGRAM "${CMAKE_MAKE_PROGRAM}" CACHE FILEPATH
+            "Forwarded to FetchContent subbuilds")
+    endif()
+endif()
+
 # Macro to search for files with a given extension.
 # call:
 #   GLOB_FILES(H_FILES *.h)

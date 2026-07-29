@@ -1,4 +1,4 @@
-// @file LibraryName_global.h
+// @file QtLLM_global.h
 // @brief DLL export/import macros, compiler portability helpers, and warning configuration.
 //
 // This header defines QT_LLM_API which resolves to __declspec(dllexport)

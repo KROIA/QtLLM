@@ -1,4 +1,4 @@
-// @file LibraryName_base.h
+// @file QtLLM_base.h
 // @brief Internal base header included by every library source file.
 //
 // Pulls in the global export/import macros, debug/profiling utilities,

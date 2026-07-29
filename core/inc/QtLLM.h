@@ -1,4 +1,4 @@
-// @file LibraryName.h
+// @file QtLLM.h
 // @brief Main public header for the library.
 //
 // Include this single header to access the entire public API.

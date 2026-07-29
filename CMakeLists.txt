@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 
 
 ## INFO
-## Template version: 1.6.2
+## Template version: 1.7.0
 ##
 ## This is a template for a CMake project.
 ## It is designed to be used with the Visual Studio
@@ -139,30 +139,78 @@ project(${LIBRARY_NAME} VERSION ${LIBRARY_VERSION})
 # Set output paths
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(CMAKE_INSTALL_PREFIX ${INSTALL_PREFIX} CACHE PATH "Installation base folder" FORCE)
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}")
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}")
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}")
+    # Output directories embed $<CONFIG> so the path is per-configuration on
+    # both single-config (Ninja, Make) and multi-config (Visual Studio, Xcode)
+    # generators. Using the genex disables CMake's implicit "<Config>"
+    # auto-append on multi-config — paths stay correct without doubling.
+    # Side benefit: any code that captures CMAKE_RUNTIME_OUTPUT_DIRECTORY into
+    # an install(CODE) string (e.g. older windeployqt wrappers in pre-fix
+    # template-derived dependencies) ends up with a path that resolves to the
+    # real per-config binary at install time, rather than the bare build root.
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}/$<CONFIG>")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}/$<CONFIG>")
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}/$<CONFIG>")
 
     set(INSTALL_LIB_PATH "${CMAKE_INSTALL_PREFIX}/${RELATIVE_INSTALL_LIB_FOLDER}")
     set(INSTALL_BIN_PATH "${CMAKE_INSTALL_PREFIX}/${RELATIVE_INSTALL_BIN_FOLDER}")
     set(INSTALL_INCLUDE_PATH "${CMAKE_INSTALL_PREFIX}/${RELATIVE_INSTALL_INCLUDE_FOLDER}")
-    set(FETCHCONTENT_BASE_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dependencies/cache" CACHE PATH "Base directory for FetchContent" FORCE)
+    # FETCHCONTENT_BASE_DIR must be config-independent so dependencies are
+    # downloaded and built once, not once per config. Hard-code the path
+    # rather than deriving it from CMAKE_RUNTIME_OUTPUT_DIRECTORY (which now
+    # contains a $<CONFIG> genex that FetchContent does not evaluate).
+    set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/${RELATIVE_BUILD_FOLDER}/dependencies/cache" CACHE PATH "Base directory for FetchContent" FORCE)
 
-    # Sentinel stamp: lives inside CMAKE_BINARY_DIR so it is deleted whenever
-    # "Delete Cache and Reconfigure" wipes the binary directory.
-    # When the stamp is absent the shared dependency source cache is wiped,
-    # forcing a fresh download on the next configure.
-    # On a plain reconfigure (cache intact) the stamp exists and the cached
-    # source trees are reused without any network access.
-    set(_KROIA_STAMP "${CMAKE_BINARY_DIR}/.deps_cache_stamp")
-    if(NOT EXISTS "${_KROIA_STAMP}")
-        if(EXISTS "${FETCHCONTENT_BASE_DIR}")
-            message(STATUS "CMake cache cleared — wiping dependency source cache for fresh download")
-            file(REMOVE_RECURSE "${FETCHCONTENT_BASE_DIR}")
+    # Two-stamp scheme so "Delete Cache and Reconfigure" still wipes the shared
+    # dependency cache, but switching to a never-configured preset for the
+    # first time does not.
+    #
+    #   1. Per-preset stamp at ${CMAKE_BINARY_DIR}/.deps_cache_stamp
+    #      Lives inside the preset's own binary dir; deleted by VS's
+    #      "Delete Cache and Reconfigure".
+    #   2. Registry entry at ${FETCHCONTENT_BASE_DIR}/.preset_stamps/<hash>
+    #      Persists across Delete-Cache; lists every preset that has been
+    #      configured at least once. Wiped by clean-deps / clean-all.
+    #
+    # Decision matrix on configure:
+    #   per-preset stamp present                -> stable reconfigure, no-op.
+    #   per-preset absent, registry absent      -> first-ever configure of
+    #                                              this preset; another preset
+    #                                              may already own the shared
+    #                                              cache; do NOT wipe.
+    #   per-preset absent, registry present     -> Delete-Cache-and-Reconfigure
+    #                                              on a known preset; WIPE the
+    #                                              shared cache to force a
+    #                                              fresh download.
+    set(_KROIA_PRESET_STAMP "${CMAKE_BINARY_DIR}/.deps_cache_stamp")
+    string(MD5 _KROIA_BIN_HASH "${CMAKE_BINARY_DIR}")
+    set(_KROIA_REGISTRY_DIR "${FETCHCONTENT_BASE_DIR}/.preset_stamps")
+    set(_KROIA_REGISTRY_ENTRY "${_KROIA_REGISTRY_DIR}/${_KROIA_BIN_HASH}")
+    if(NOT EXISTS "${_KROIA_PRESET_STAMP}")
+        if(EXISTS "${_KROIA_REGISTRY_ENTRY}")
+            # Known preset whose binary dir was wiped: this is "Delete Cache
+            # and Reconfigure". Force a fresh dependency download.
+            if(EXISTS "${FETCHCONTENT_BASE_DIR}")
+                message(STATUS "Delete Cache detected for this preset — wiping shared dependency cache for fresh download")
+                file(REMOVE_RECURSE "${FETCHCONTENT_BASE_DIR}")
+            endif()
+        else()
+            # First-ever configure of this preset. Another preset may already
+            # have populated the shared cache; do not disturb it.
+            message(STATUS "First configure of this preset — preserving shared dependency cache if present")
         endif()
-        file(TOUCH "${_KROIA_STAMP}")
+        file(TOUCH "${_KROIA_PRESET_STAMP}")
     endif()
-    unset(_KROIA_STAMP)
+    # Always ensure the registry entry exists. This also self-heals projects
+    # that were previously configured under the old single-stamp logic: their
+    # existing per-preset stamp skips the if-block above, but their first run
+    # under the new logic still backfills the registry so a later
+    # Delete-Cache-and-Reconfigure correctly wipes the shared cache.
+    file(MAKE_DIRECTORY "${_KROIA_REGISTRY_DIR}")
+    file(TOUCH "${_KROIA_REGISTRY_ENTRY}")
+    unset(_KROIA_PRESET_STAMP)
+    unset(_KROIA_BIN_HASH)
+    unset(_KROIA_REGISTRY_DIR)
+    unset(_KROIA_REGISTRY_ENTRY)
 
     # Do not re-download or git-fetch dependencies that are already present in
     # FETCHCONTENT_BASE_DIR.  On a plain reconfigure CMake will reuse the
@@ -231,6 +279,18 @@ if(COMPILE_UNITTESTS AND NOT QtLLM_NO_UNITTESTS)
     message("Include unittests for ${LIBRARY_NAME}")
     add_subdirectory(unittests)
 endif()
+
+# Restore the top-level project's cmake helpers after every FetchContent dep
+# has been processed. Older template-derived dependencies carry their own
+# copies of cmake/utility.cmake and cmake/ExampleMaster.cmake and call
+# include() on them from their own CMakeLists.txt, which silently
+# *redefines* the global windeployqt() and exampleMaster() functions with
+# the dep's older version. Without this re-include, any add_subdirectory()
+# below (e.g. a user-added application module in USER_SECTION_START 6)
+# would call those stale functions and lose features such as the
+# POST_BUILD Qt deploy.
+include(cmake/utility.cmake)
+include(cmake/ExampleMaster.cmake)
 
 ## USER_SECTION_START 6
 
