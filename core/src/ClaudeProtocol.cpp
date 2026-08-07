@@ -63,11 +63,12 @@ void ClaudeProtocol::beginTurn(const QString& userMessage)
 
 void ClaudeProtocol::startNewTurn(const QString& userMessage)
 {
-    m_turnInProgress   = true;
-    m_turnInputTokens  = 0;
-    m_turnOutputTokens = 0;
-    m_turnToolCalls    = 0;
-    m_turnTimerStarted = false;
+    m_turnInProgress      = true;
+    m_turnInputTokens     = 0;
+    m_turnOutputTokens    = 0;
+    m_turnToolCalls       = 0;
+    m_turnToolIterations  = 0;
+    m_turnTimerStarted    = false;
 
     QJsonObject msg;
     msg["role"]    = "user";
@@ -220,6 +221,42 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         }
 
         executeToolCalls(toolUseBlocks);
+
+        if (++m_turnToolIterations > kMaxToolIterations) {
+            QString capText = assembleText(content);
+            if (capText.isEmpty())
+                capText = "[Tool-use iteration limit reached]";
+
+            m_sessionInputTokens  += m_turnInputTokens;
+            m_sessionOutputTokens += m_turnOutputTokens;
+            m_sessionToolCalls    += m_turnToolCalls;
+            ++m_sessionTurnCount;
+
+            auto [inPrice, outPrice] = modelPricing();
+            double turnCost = (m_turnInputTokens  / 1'000'000.0) * inPrice
+                            + (m_turnOutputTokens / 1'000'000.0) * outPrice;
+            m_sessionCostUsd += turnCost;
+
+            UsageStats stats;
+            stats.inputTokens         = m_turnInputTokens;
+            stats.outputTokens        = m_turnOutputTokens;
+            stats.toolCalls           = m_turnToolCalls;
+            stats.durationMs          = m_turnTimer.elapsed();
+            stats.sessionInputTokens  = m_sessionInputTokens;
+            stats.sessionOutputTokens = m_sessionOutputTokens;
+            stats.sessionToolCalls    = m_sessionToolCalls;
+            stats.sessionTurnCount    = m_sessionTurnCount;
+            stats.sessionCostUsd      = m_sessionCostUsd;
+
+            emit errorOccurred("Tool-use iteration limit reached ("
+                               + QString::number(kMaxToolIterations) + ")");
+            emit requestFinished();
+            emit responseReady(capText);
+            emit statsReady(stats);
+            drainQueue();
+            return;
+        }
+
         sendRequest();
     }
 }
@@ -258,6 +295,8 @@ void ClaudeProtocol::executeToolCalls(const QJsonArray& toolUseBlocks)
         toolResult["type"]        = "tool_result";
         toolResult["tool_use_id"] = toolId;
         toolResult["content"]     = resultStr;
+        if (result["status"].toString() == "error")
+            toolResult["is_error"] = true;
         toolResults.append(toolResult);
     }
 

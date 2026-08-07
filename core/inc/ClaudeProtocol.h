@@ -65,6 +65,10 @@ private:
     bool           m_turnInProgress{false};
     QQueue<QString> m_pendingTurns;
 
+    // Tool-use loop guard
+    static constexpr int kMaxToolIterations = 25;
+    int    m_turnToolIterations = 0;
+
     // Stats tracking
     QElapsedTimer m_turnTimer;
     int    m_turnInputTokens  = 0;
