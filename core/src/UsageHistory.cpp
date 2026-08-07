@@ -112,6 +112,12 @@ qint64 UsageHistory::sessionStartMs() const
     return m_sessionStartMs;
 }
 
+void UsageHistory::reload()
+{
+    m_samples.clear();
+    loadFromFile();
+}
+
 void UsageHistory::clear()
 {
     m_samples.clear();

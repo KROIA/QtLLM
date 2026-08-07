@@ -65,6 +65,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private slots:
     void onRangeChanged(int index);
@@ -103,6 +104,7 @@ private:
 
     // Data
     UsageHistory*         m_history = nullptr;
+    UsageHistory*         m_ownedHistory = nullptr;  // self-loading fallback when no external history is set
     QVector<ChartBucket>  m_buckets;
     QVector<ModelSummary> m_summaries;
     QStringList           m_allModels;  // stable ordering for colour assignment

@@ -27,8 +27,12 @@ namespace QtLLM
         void updateTokenUsage(int inputTokens, int outputTokens);
         void setFontSizePercent(int percent);
 
+        // Bubble name labels. Set to an empty string to hide the header entirely
+        // on that side; otherwise the given text is shown (HTML-escaped).
         void setAssistantName(const QString& name);
         QString assistantName() const;
+        void setUserName(const QString& name);
+        QString userName() const;
 
         void setSendButtonText(const QString& text);
         void setCancelButtonText(const QString& text);
@@ -75,6 +79,7 @@ namespace QtLLM
         int m_fontSizePercent = 100;
 
         QString m_assistantName = QStringLiteral("Assistant");
+        QString m_userName = QStringLiteral("You");
         QString m_cancelledText = QStringLiteral("Request cancelled.");
         QString m_busyWarningText = QStringLiteral("Please wait — a response is still being processed.");
     };

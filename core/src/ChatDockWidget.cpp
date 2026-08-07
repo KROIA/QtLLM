@@ -30,6 +30,15 @@ namespace QtLLM
     ChatDockWidget::ChatDockWidget(QWidget* parent)
         : QDockWidget(parent)
     {
+        // Default the user bubble label to the OS username (the consumer can
+        // override with setUserName(), e.g. an application-specific account name,
+        // or "" to hide the header). Falls back to "You" if unavailable.
+        QByteArray osUser = qgetenv("USERNAME");
+        if (osUser.isEmpty())
+            osUser = qgetenv("USER");
+        if (!osUser.isEmpty())
+            m_userName = QString::fromLocal8Bit(osUser);
+
         setupUI();
     }
 
@@ -234,6 +243,16 @@ namespace QtLLM
         return m_assistantName;
     }
 
+    void ChatDockWidget::setUserName(const QString& name)
+    {
+        m_userName = name;
+    }
+
+    QString ChatDockWidget::userName() const
+    {
+        return m_userName;
+    }
+
     void ChatDockWidget::setSendButtonText(const QString& text)
     {
         m_sendButton->setText(text);
@@ -422,9 +441,14 @@ namespace QtLLM
         f.setPointSize(scaledPt);
         label->setFont(f);
 
-        QString nameHtml = QString("<div style='font-weight: bold; font-size: %1pt; margin-bottom: 2px;'>%2</div>")
-            .arg(qMax(scaledPt - 1, 6))
-            .arg(isUser ? QStringLiteral("You") : m_assistantName.toHtmlEscaped());
+        // Per-side name header. Empty name hides the header entirely on that side.
+        const QString name = isUser ? m_userName : m_assistantName;
+        QString nameHtml;
+        if (!name.isEmpty()) {
+            nameHtml = QString("<div style='font-weight: bold; font-size: %1pt; margin-bottom: 4px;'>%2</div>")
+                .arg(qMax(scaledPt - 1, 6))
+                .arg(name.toHtmlEscaped());
+        }
 
         if (isUser) {
             label->setText(nameHtml + text.toHtmlEscaped().replace("\n", "<br>"));

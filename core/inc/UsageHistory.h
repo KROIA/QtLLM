@@ -38,6 +38,10 @@ public:
     // Session start epoch (set at construction time).
     qint64 sessionStartMs() const;
 
+    // Discard in-memory samples and re-read them from the JSONL file. Lets a
+    // read-only viewer pick up samples appended by another instance/process.
+    void reload();
+
     // TODO: rotation/cap is a future concern.
     void clear();
 

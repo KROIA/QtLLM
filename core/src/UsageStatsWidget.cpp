@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QMouseEvent>
+#include <QShowEvent>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -96,6 +97,12 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
             this, &UsageStatsWidget::onModelFilterChanged);
     connect(m_copyCsvBtn, &QPushButton::clicked,
             this, &UsageStatsWidget::onCopyCsv);
+
+    // Fallback history: a self-loading, read-only view of the persisted JSONL so
+    // the panel shows data even if the consumer never calls setUsageHistory().
+    // It reloads on show (see showEvent) to pick up samples written this run.
+    m_ownedHistory = new UsageHistory(this);
+    setUsageHistory(m_ownedHistory);
 }
 
 UsageStatsWidget::~UsageStatsWidget() = default;
@@ -105,6 +112,12 @@ void UsageStatsWidget::setUsageHistory(UsageHistory* history)
     if (m_history)
         disconnect(m_history, nullptr, this, nullptr);
 
+    // If an external history is supplied, drop the owned fallback.
+    if (m_ownedHistory && history != m_ownedHistory) {
+        delete m_ownedHistory;
+        m_ownedHistory = nullptr;
+    }
+
     m_history = history;
     if (m_history) {
         connect(m_history, &UsageHistory::sampleAppended,
@@ -112,6 +125,19 @@ void UsageStatsWidget::setUsageHistory(UsageHistory* history)
     }
     rebuildModelFilter();
     rebuildData();
+    update();
+}
+
+void UsageStatsWidget::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    // When running on the self-loading fallback, re-read the file each time the
+    // panel is shown so freshly recorded turns appear without an app restart.
+    if (m_history && m_history == m_ownedHistory) {
+        m_ownedHistory->reload();
+        rebuildModelFilter();
+        rebuildData();
+    }
     update();
 }
 
