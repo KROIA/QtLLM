@@ -5,6 +5,15 @@
 #include <QToolTip>
 #include <QRegularExpression>
 #include <QStyle>
+#include <QPixmap>
+
+// Resources compiled into a STATIC library are not auto-registered — the
+// consuming app must initialise them. Must live at global scope (the generated
+// qInitResources_icons symbol is global, not in namespace QtLLM).
+static void qtllmInitResources()
+{
+    Q_INIT_RESOURCE(icons);
+}
 
 namespace QtLLM
 {
@@ -31,6 +40,8 @@ namespace QtLLM
     ChatDockWidget::ChatDockWidget(QWidget* parent)
         : QDockWidget(parent)
     {
+        qtllmInitResources();  // register :/icons/* (needed when linked statically)
+
         // Default the user bubble label to the OS username (the consumer can
         // override with setUserName(), e.g. an application-specific account name,
         // or "" to hide the header). Falls back to "You" if unavailable.
@@ -103,9 +114,12 @@ namespace QtLLM
 
         m_saveButton = new QPushButton(m_centralWidget);
         {
-            QIcon saveIcon(QStringLiteral(":/icons/floppy_disk.png"));
-            if (saveIcon.isNull())
-                saveIcon = style()->standardIcon(QStyle::SP_DialogSaveButton);
+            // QIcon(":/missing") is NOT null (it just paints blank), so load via
+            // QPixmap and check isNull() to reliably fall back to a style icon.
+            QPixmap savePm(QStringLiteral(":/icons/floppy_disk.png"));
+            QIcon saveIcon = savePm.isNull()
+                ? style()->standardIcon(QStyle::SP_DialogSaveButton)
+                : QIcon(savePm);
             m_saveButton->setIcon(saveIcon);
         }
         m_saveButton->setFixedWidth(32);
