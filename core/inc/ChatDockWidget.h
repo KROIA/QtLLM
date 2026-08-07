@@ -11,6 +11,8 @@
 
 namespace QtLLM
 {
+    class Client;
+
     class QT_LLM_API ChatDockWidget : public QDockWidget
     {
         Q_OBJECT
@@ -34,6 +36,12 @@ namespace QtLLM
         void setUserName(const QString& name);
         QString userName() const;
 
+        // Bind the conversation source. When set, the Save button saves the
+        // conversation itself (file dialog + JSON export) — no app wiring needed.
+        // If no client is set, the button falls back to emitting
+        // saveConversationRequested() for custom handling.
+        void setClient(Client* client);
+
         void setSendButtonText(const QString& text);
         void setCancelButtonText(const QString& text);
         void setSettingsButtonTooltip(const QString& text);
@@ -52,6 +60,7 @@ namespace QtLLM
         void onSendClicked();
         void onCancelClicked();
         void onCancelTimerTimeout();
+        void onSaveClicked();
 
     protected:
         void resizeEvent(QResizeEvent* event) override;
@@ -70,6 +79,7 @@ namespace QtLLM
         QPushButton* m_cancelButton = nullptr;
         QPushButton* m_saveButton = nullptr;
         QPushButton* m_settingsButton = nullptr;
+        Client* m_client = nullptr;  // optional conversation source for built-in Save
         QLabel* m_loadingLabel = nullptr;
         QLabel* m_statusLabel = nullptr;
         QLabel* m_tokenLabel = nullptr;

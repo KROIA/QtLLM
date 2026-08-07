@@ -6,6 +6,11 @@
 #include <QRegularExpression>
 #include <QStyle>
 #include <QPixmap>
+#include <QFileDialog>
+#include <QJsonDocument>
+#include <QFile>
+#include <QDateTime>
+#include "Client.h"
 
 // Resources compiled into a STATIC library are not auto-registered — the
 // consuming app must initialise them. Must live at global scope (the generated
@@ -146,7 +151,7 @@ namespace QtLLM
 
         connect(m_sendButton, &QPushButton::clicked, this, &ChatDockWidget::onSendClicked);
         connect(m_cancelButton, &QPushButton::clicked, this, &ChatDockWidget::onCancelClicked);
-        connect(m_saveButton, &QPushButton::clicked, this, &ChatDockWidget::saveConversationRequested);
+        connect(m_saveButton, &QPushButton::clicked, this, &ChatDockWidget::onSaveClicked);
         connect(m_settingsButton, &QPushButton::clicked, this, &ChatDockWidget::settingsRequested);
         connect(&m_cancelTimer, &QTimer::timeout, this, &ChatDockWidget::onCancelTimerTimeout);
 
@@ -278,6 +283,37 @@ namespace QtLLM
     QString ChatDockWidget::userName() const
     {
         return m_userName;
+    }
+
+    void ChatDockWidget::setClient(Client* client)
+    {
+        m_client = client;
+    }
+
+    void ChatDockWidget::onSaveClicked()
+    {
+        // No client bound: let the app handle saving via the signal.
+        if (!m_client) {
+            emit saveConversationRequested();
+            return;
+        }
+
+        const QString defName = QStringLiteral("conversation_%1.json")
+            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+        const QString path = QFileDialog::getSaveFileName(
+            this, QString::fromUtf16(u"Konversation speichern"),
+            defName, QStringLiteral("JSON (*.json)"));
+        if (path.isEmpty())
+            return;
+
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            setStatusText(QString::fromUtf16(u"Speichern fehlgeschlagen."));
+            return;
+        }
+        f.write(QJsonDocument(m_client->exportConversation()).toJson(QJsonDocument::Indented));
+        f.close();
+        setStatusText(QString::fromUtf16(u"Konversation gespeichert: ") + path);
     }
 
     void ChatDockWidget::setSendButtonText(const QString& text)
