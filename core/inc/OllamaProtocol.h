@@ -28,10 +28,13 @@ public:
     void beginTurn(const QString& userMessage) override;
     void clearHistory() override;
     void clearStats() override;
+    void fetchModels() override;
 
 private slots:
     void onReplyReceived(const QByteArray& data);
     void onTransportError(const QString& message);
+    void onModelsReplyReceived(const QByteArray& data);
+    void onModelsTransportError(const QString& message);
 
 private:
     void        startNewTurn(const QString& userMessage);
@@ -49,6 +52,7 @@ private:
     QMap<QString, ToolHandler> m_toolHandlers;
     QJsonArray                 m_history;
     HttpTransport*             m_transport;
+    HttpTransport*             m_modelsTransport;  // separate transport for model listing
 
     // Turn serialization queue
     bool            m_turnInProgress{false};

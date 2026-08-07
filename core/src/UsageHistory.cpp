@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QSet>
 
 namespace QtLLM {
@@ -30,7 +31,10 @@ QString UsageHistory::defaultFilePath() const
 {
     if (!m_filePath.isEmpty())
         return m_filePath;
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    // Intentionally global (GenericDataLocation has no org/app suffix) so all
+    // QtLLM-consuming apps for this user share one usage history file.
+    // Pre-existing per-app files under AppDataLocation are not migrated (future).
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
     return base + "/QtLLM/usage_history.jsonl";
 }
 
@@ -56,20 +60,25 @@ void UsageHistory::loadFromFile()
 
 void UsageHistory::append(const UsageSample& sample)
 {
-    m_samples.append(sample);
+    UsageSample s = sample;
+    if (s.app.isEmpty()) {
+        QString name = QCoreApplication::applicationName();
+        s.app = name.isEmpty() ? QStringLiteral("unknown") : name;
+    }
+    m_samples.append(s);
 
     QString path = defaultFilePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QFile file(path);
     if (file.open(QIODevice::Append | QIODevice::Text)) {
-        QByteArray line = QJsonDocument(sampleToJson(sample)).toJson(QJsonDocument::Compact);
+        QByteArray line = QJsonDocument(sampleToJson(s)).toJson(QJsonDocument::Compact);
         line.append('\n');
         file.write(line);
         file.flush();
     }
 
-    emit sampleAppended(sample);
+    emit sampleAppended(s);
 }
 
 const QVector<UsageSample>& UsageHistory::samples() const
@@ -95,6 +104,19 @@ QStringList UsageHistory::distinctModels() const
         if (!seen.contains(s.model)) {
             seen.insert(s.model);
             result.append(s.model);
+        }
+    }
+    return result;
+}
+
+QStringList UsageHistory::distinctApps() const
+{
+    QSet<QString> seen;
+    QStringList result;
+    for (const UsageSample& s : m_samples) {
+        if (!seen.contains(s.app)) {
+            seen.insert(s.app);
+            result.append(s.app);
         }
     }
     return result;
@@ -131,6 +153,7 @@ QJsonObject UsageHistory::sampleToJson(const UsageSample& s)
     obj["ts"]           = s.timestampMsEpoch;
     obj["model"]        = s.model;
     obj["provider"]     = s.provider;
+    obj["app"]          = s.app;
     obj["in"]           = s.inputTokens;
     obj["out"]          = s.outputTokens;
     obj["cache_read"]   = s.cacheReadInputTokens;
@@ -147,6 +170,7 @@ UsageSample UsageHistory::sampleFromJson(const QJsonObject& obj)
     s.timestampMsEpoch         = static_cast<qint64>(obj["ts"].toDouble());
     s.model                    = obj["model"].toString();
     s.provider                 = obj["provider"].toString();
+    s.app                      = obj["app"].toString();
     s.inputTokens              = obj["in"].toInt();
     s.outputTokens             = obj["out"].toInt();
     s.cacheReadInputTokens     = obj["cache_read"].toInt();

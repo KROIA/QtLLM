@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QMap>
 #include <functional>
 
@@ -36,7 +37,12 @@ public:
     // Reset accumulated session statistics (called by Client::clearConversation).
     virtual void clearStats() = 0;
 
+    // Fetch the list of available models from the provider asynchronously.
+    virtual void fetchModels() = 0;
+
 signals:
+    // Emitted when fetchModels() completes; empty list on error.
+    void modelsFetched(const QStringList& models);
     void responseReady(const QString& assembledText);
     void toolInvoked(const QString& toolName, const QJsonObject& input);
     void toolCompleted(const QString& toolName, const QJsonObject& result);

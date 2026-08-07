@@ -13,11 +13,16 @@ OllamaProtocol::OllamaProtocol(const QUrl& url, QObject* parent)
     , m_toolHandlers()
     , m_history()
     , m_transport(new HttpTransport(this))
+    , m_modelsTransport(new HttpTransport(this))
 {
     connect(m_transport, &HttpTransport::replyReceived,
             this, &OllamaProtocol::onReplyReceived);
     connect(m_transport, &HttpTransport::errorOccurred,
             this, &OllamaProtocol::onTransportError);
+    connect(m_modelsTransport, &HttpTransport::replyReceived,
+            this, &OllamaProtocol::onModelsReplyReceived);
+    connect(m_modelsTransport, &HttpTransport::errorOccurred,
+            this, &OllamaProtocol::onModelsTransportError);
 }
 
 OllamaProtocol::~OllamaProtocol() = default;
@@ -263,6 +268,46 @@ void OllamaProtocol::onTransportError(const QString& message)
     emit errorOccurred(message);
     emit requestFinished();
     drainQueue();
+}
+
+void OllamaProtocol::fetchModels()
+{
+    // Ollama tags endpoint: base URL + /api/tags
+    QUrl tagsUrl = m_url;
+    tagsUrl.setPath("/api/tags");
+    m_modelsTransport->get(tagsUrl, {});
+}
+
+void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (doc.isNull()) {
+        emit errorOccurred("Failed to parse Ollama models response");
+        emit modelsFetched({});
+        return;
+    }
+
+    QJsonObject root = doc.object();
+    if (root.contains("error")) {
+        emit errorOccurred(root["error"].toString());
+        emit modelsFetched({});
+        return;
+    }
+
+    QStringList models;
+    QJsonArray arr = root["models"].toArray();
+    for (const QJsonValue& val : arr) {
+        QString name = val.toObject()["name"].toString();
+        if (!name.isEmpty())
+            models.append(name);
+    }
+    emit modelsFetched(models);
+}
+
+void OllamaProtocol::onModelsTransportError(const QString& message)
+{
+    emit errorOccurred(message);
+    emit modelsFetched({});
 }
 
 } // namespace QtLLM

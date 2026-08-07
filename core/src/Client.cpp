@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QDateTime>
+#include <QCoreApplication>
 
 namespace QtLLM {
 
@@ -51,6 +52,7 @@ void Client::connectProtocol()
     connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::onProtocolError);
     connect(m_protocol, &ProtocolBase::requestStarted,  this, &Client::requestStarted);
     connect(m_protocol, &ProtocolBase::requestFinished, this, &Client::requestFinished);
+    connect(m_protocol, &ProtocolBase::modelsFetched,   this, &Client::modelsAvailable);
 }
 
 void Client::onProtocolResponseReady(const QString& text)
@@ -213,12 +215,19 @@ UsageHistory* Client::usageHistory()
     return m_usageHistory;
 }
 
+void Client::fetchAvailableModels()
+{
+    m_protocol->fetchModels();
+}
+
 void Client::recordSample(const UsageStats& stats)
 {
     UsageSample sample;
     sample.timestampMsEpoch         = QDateTime::currentMSecsSinceEpoch();
     sample.model                    = m_currentModel;
     sample.provider                 = m_currentProvider;
+    QString appName = QCoreApplication::applicationName();
+    sample.app                      = appName.isEmpty() ? QStringLiteral("unknown") : appName;
     sample.inputTokens              = stats.inputTokens;
     sample.outputTokens             = stats.outputTokens;
     sample.cacheReadInputTokens     = stats.cacheReadInputTokens;

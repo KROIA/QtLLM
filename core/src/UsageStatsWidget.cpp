@@ -78,6 +78,11 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
     controlsLayout->addWidget(new QLabel("Model:", this));
     controlsLayout->addWidget(m_modelFilterCombo);
 
+    m_appFilterCombo = new QComboBox(this);
+    m_appFilterCombo->addItem("All");
+    controlsLayout->addWidget(new QLabel("App:", this));
+    controlsLayout->addWidget(m_appFilterCombo);
+
     controlsLayout->addStretch();
 
     m_copyCsvBtn = new QPushButton("Copy CSV", this);
@@ -95,6 +100,8 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
             this, &UsageStatsWidget::onColourByChanged);
     connect(m_modelFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &UsageStatsWidget::onModelFilterChanged);
+    connect(m_appFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &UsageStatsWidget::onAppFilterChanged);
     connect(m_copyCsvBtn, &QPushButton::clicked,
             this, &UsageStatsWidget::onCopyCsv);
 
@@ -124,6 +131,7 @@ void UsageStatsWidget::setUsageHistory(UsageHistory* history)
                 this, &UsageStatsWidget::onSampleAppended);
     }
     rebuildModelFilter();
+    rebuildAppFilter();
     rebuildData();
     update();
 }
@@ -136,6 +144,7 @@ void UsageStatsWidget::showEvent(QShowEvent* event)
     if (m_history && m_history == m_ownedHistory) {
         m_ownedHistory->reload();
         rebuildModelFilter();
+        rebuildAppFilter();
         rebuildData();
     }
     update();
@@ -172,9 +181,17 @@ void UsageStatsWidget::onModelFilterChanged(int index)
     update();
 }
 
+void UsageStatsWidget::onAppFilterChanged(int index)
+{
+    m_appFilter = (index <= 0) ? QString() : m_appFilterCombo->itemText(index);
+    rebuildData();
+    update();
+}
+
 void UsageStatsWidget::onSampleAppended(const QtLLM::UsageSample& /*sample*/)
 {
     rebuildModelFilter();
+    rebuildAppFilter();
     rebuildData();
     update();
 }
@@ -225,6 +242,8 @@ QVector<UsageSample> UsageStatsWidget::filteredSamples() const
             continue;
         if (!m_modelFilter.isEmpty() && s.model != m_modelFilter)
             continue;
+        if (!m_appFilter.isEmpty() && s.app != m_appFilter)
+            continue;
         result.append(s);
     }
     return result;
@@ -259,6 +278,20 @@ void UsageStatsWidget::rebuildModelFilter()
     int idx = m_modelFilterCombo->findText(current);
     m_modelFilterCombo->setCurrentIndex(idx >= 0 ? idx : 0);
     m_modelFilterCombo->blockSignals(false);
+}
+
+void UsageStatsWidget::rebuildAppFilter()
+{
+    if (!m_history) return;
+    QString current = m_appFilterCombo->currentText();
+    m_appFilterCombo->blockSignals(true);
+    m_appFilterCombo->clear();
+    m_appFilterCombo->addItem("All");
+    for (const QString& a : m_history->distinctApps())
+        m_appFilterCombo->addItem(a);
+    int idx = m_appFilterCombo->findText(current);
+    m_appFilterCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    m_appFilterCombo->blockSignals(false);
 }
 
 QVector<ChartBucket> UsageStatsWidget::buildBuckets(const QVector<UsageSample>& samples) const

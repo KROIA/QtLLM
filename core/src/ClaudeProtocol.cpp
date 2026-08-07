@@ -22,11 +22,16 @@ ClaudeProtocol::ClaudeProtocol(const QString& apiKey,
     , m_toolHandlers()
     , m_history()
     , m_transport(new HttpTransport(this))
+    , m_modelsTransport(new HttpTransport(this))
 {
     connect(m_transport, &HttpTransport::replyReceived,
             this, &ClaudeProtocol::onReplyReceived);
     connect(m_transport, &HttpTransport::errorOccurred,
             this, &ClaudeProtocol::onTransportError);
+    connect(m_modelsTransport, &HttpTransport::replyReceived,
+            this, &ClaudeProtocol::onModelsReplyReceived);
+    connect(m_modelsTransport, &HttpTransport::errorOccurred,
+            this, &ClaudeProtocol::onModelsTransportError);
 }
 
 ClaudeProtocol::~ClaudeProtocol() = default;
@@ -416,6 +421,62 @@ void ClaudeProtocol::onTransportError(const QString& message)
     emit errorOccurred(message);
     emit requestFinished();
     drainQueue();
+}
+
+void ClaudeProtocol::fetchModels()
+{
+    // Derive models endpoint from the messages endpoint URL.
+    // e.g. https://api.anthropic.com/v1/messages -> https://api.anthropic.com/v1/models
+    QUrl modelsUrl = m_url;
+    QString path = modelsUrl.path();
+    if (path.endsWith("/messages"))
+        path.replace(path.length() - 9, 9, "/models");
+    else {
+        // Drop last segment and append "models"
+        int lastSlash = path.lastIndexOf('/');
+        if (lastSlash >= 0)
+            path = path.left(lastSlash + 1) + "models";
+        else
+            path += "/models";
+    }
+    modelsUrl.setPath(path);
+
+    QList<QPair<QByteArray, QByteArray>> headers;
+    headers.append({"x-api-key", m_apiKey.toUtf8()});
+    headers.append({QByteArray("anthropic-version"), QByteArray("2023-06-01")});
+    m_modelsTransport->get(modelsUrl, headers);
+}
+
+void ClaudeProtocol::onModelsReplyReceived(const QByteArray& data)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (doc.isNull()) {
+        emit errorOccurred("Failed to parse models response");
+        emit modelsFetched({});
+        return;
+    }
+
+    QJsonObject root = doc.object();
+    if (root.contains("error")) {
+        emit errorOccurred(root["error"].toObject()["message"].toString());
+        emit modelsFetched({});
+        return;
+    }
+
+    QStringList models;
+    QJsonArray dataArr = root["data"].toArray();
+    for (const QJsonValue& val : dataArr) {
+        QString id = val.toObject()["id"].toString();
+        if (!id.isEmpty())
+            models.append(id);
+    }
+    emit modelsFetched(models);
+}
+
+void ClaudeProtocol::onModelsTransportError(const QString& message)
+{
+    emit errorOccurred(message);
+    emit modelsFetched({});
 }
 
 } // namespace QtLLM

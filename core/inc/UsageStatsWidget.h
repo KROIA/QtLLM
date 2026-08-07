@@ -71,6 +71,7 @@ private slots:
     void onRangeChanged(int index);
     void onColourByChanged(int index);
     void onModelFilterChanged(int index);
+    void onAppFilterChanged(int index);
     void onSampleAppended(const QtLLM::UsageSample& sample);
     void onCopyCsv();
 
@@ -80,6 +81,7 @@ private:
 
     void rebuildData();
     void rebuildModelFilter();
+    void rebuildAppFilter();
     QVector<UsageSample> filteredSamples() const;
     QVector<ChartBucket> buildBuckets(const QVector<UsageSample>& samples) const;
     QVector<ModelSummary> buildSummaries(const QVector<UsageSample>& samples) const;
@@ -113,12 +115,14 @@ private:
     QComboBox*   m_rangeCombo       = nullptr;
     QComboBox*   m_colourByCombo    = nullptr;
     QComboBox*   m_modelFilterCombo = nullptr;
+    QComboBox*   m_appFilterCombo   = nullptr;
     QPushButton* m_copyCsvBtn       = nullptr;
 
     // State
     TimeRange m_range    = TimeRange::Session;
     ColourBy  m_colourBy = ColourBy::Category;
     QString   m_modelFilter;  // empty = all
+    QString   m_appFilter;    // empty = all
     int       m_hoverBucket = -1;
     QPoint    m_hoverPos;
     bool      m_darkOverride  = false;

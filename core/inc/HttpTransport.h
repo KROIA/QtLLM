@@ -18,6 +18,10 @@ public:
               const QByteArray& jsonBody,
               const QList<QPair<QByteArray, QByteArray>>& headers = {});
 
+    // Simple GET request with optional custom headers.
+    void get(const QUrl& url,
+             const QList<QPair<QByteArray, QByteArray>>& headers = {});
+
     bool isBusy() const;
 
 signals:

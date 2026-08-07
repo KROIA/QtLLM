@@ -32,6 +32,9 @@ public:
     // Distinct model identifiers across all samples.
     QStringList distinctModels() const;
 
+    // Distinct application names across all samples.
+    QStringList distinctApps() const;
+
     // Epoch of the earliest sample, or 0.
     qint64 earliestTimestamp() const;
 

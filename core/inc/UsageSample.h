@@ -11,6 +11,7 @@ struct QT_LLM_API UsageSample
     qint64  timestampMsEpoch         = 0;  // QDateTime::currentMSecsSinceEpoch() at turn end
     QString model;                         // model id this turn ran on
     QString provider;                      // "claude" | "ollama"
+    QString app;                           // producing application name
     int     inputTokens              = 0;  // uncached input (Anthropic usage.input_tokens)
     int     outputTokens             = 0;
     int     cacheReadInputTokens     = 0;

@@ -445,7 +445,10 @@ namespace QtLLM
         const QString name = isUser ? m_userName : m_assistantName;
         QString nameHtml;
         if (!name.isEmpty()) {
-            nameHtml = QString("<div style='font-weight: bold; font-size: %1pt; margin-bottom: 4px;'>%2</div>")
+            // Explicit <br/> — a block <div> does not reliably line-break before
+            // inline body text in QLabel's rich-text subset (the user's plain text
+            // ran onto the same line as the name).
+            nameHtml = QString("<span style='font-weight: bold; font-size: %1pt;'>%2</span><br/>")
                 .arg(qMax(scaledPt - 1, 6))
                 .arg(name.toHtmlEscaped());
         }

@@ -47,9 +47,14 @@ namespace QtLLM
         m_endpointUrlEdit->setText("https://api.anthropic.com/v1/messages");
         formLayout->addRow(m_endpointUrlLabel, m_endpointUrlEdit);
 
-        m_modelEdit = new QLineEdit(settingsPage);
-        m_modelEdit->setText("claude-haiku-4-5");
-        formLayout->addRow("Model:", m_modelEdit);
+        m_modelCombo = new QComboBox(settingsPage);
+        m_modelCombo->setEditable(true);
+        m_modelCombo->setEditText("claude-haiku-4-5");
+        m_detectModelsBtn = new QPushButton(QString::fromUtf16(u"Modelle laden"), settingsPage);
+        auto* modelRow = new QHBoxLayout();
+        modelRow->addWidget(m_modelCombo, 1);
+        modelRow->addWidget(m_detectModelsBtn);
+        formLayout->addRow("Model:", modelRow);
 
         m_ollamaUrlLabel = new QLabel("Ollama URL:", settingsPage);
         m_ollamaUrlEdit = new QLineEdit(settingsPage);
@@ -87,6 +92,8 @@ namespace QtLLM
 
         connect(m_providerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &SettingsDialog::onProviderChanged);
+        connect(m_detectModelsBtn, &QPushButton::clicked,
+                this, &SettingsDialog::detectModelsRequested);
         connect(m_buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked,
                 this, &SettingsDialog::onApply);
         connect(m_buttonBox, &QDialogButtonBox::rejected,
@@ -109,9 +116,9 @@ namespace QtLLM
     void SettingsDialog::onProviderChanged(int index)
     {
         if (static_cast<Provider>(index) == Provider::Claude)
-            m_modelEdit->setText("claude-haiku-4-5");
+            m_modelCombo->setEditText("claude-haiku-4-5");
         else
-            m_modelEdit->setText("llama3.2:latest");
+            m_modelCombo->setEditText("llama3.2:latest");
 
         updateFieldVisibility();
     }
@@ -128,7 +135,7 @@ namespace QtLLM
     }
 
     QString SettingsDialog::apiKey() const { return m_apiKeyEdit->text(); }
-    QString SettingsDialog::model() const { return m_modelEdit->text(); }
+    QString SettingsDialog::model() const { return m_modelCombo->currentText(); }
     QString SettingsDialog::endpointUrl() const { return m_endpointUrlEdit->text(); }
     QString SettingsDialog::ollamaUrl() const { return m_ollamaUrlEdit->text(); }
     QString SettingsDialog::systemPrompt() const { return m_systemPromptEdit->toPlainText(); }
@@ -136,7 +143,7 @@ namespace QtLLM
 
     void SettingsDialog::setProvider(Provider provider) { m_providerCombo->setCurrentIndex(static_cast<int>(provider)); }
     void SettingsDialog::setApiKey(const QString& key) { m_apiKeyEdit->setText(key); }
-    void SettingsDialog::setModel(const QString& model) { m_modelEdit->setText(model); }
+    void SettingsDialog::setModel(const QString& model) { m_modelCombo->setEditText(model); }
     void SettingsDialog::setEndpointUrl(const QString& url) { m_endpointUrlEdit->setText(url); }
     void SettingsDialog::setOllamaUrl(const QString& url) { m_ollamaUrlEdit->setText(url); }
     void SettingsDialog::setSystemPrompt(const QString& prompt) { m_systemPromptEdit->setPlainText(prompt); }
@@ -148,5 +155,17 @@ namespace QtLLM
     {
         if (m_statsWidget)
             m_statsWidget->setUsageHistory(history);
+    }
+
+    void SettingsDialog::setAvailableModels(const QStringList& models)
+    {
+        QString current = m_modelCombo->currentText();
+        // Add models not already present
+        for (const QString& m : models) {
+            if (m_modelCombo->findText(m) < 0)
+                m_modelCombo->addItem(m);
+        }
+        // Preserve the user's typed/selected value
+        m_modelCombo->setEditText(current);
     }
 }

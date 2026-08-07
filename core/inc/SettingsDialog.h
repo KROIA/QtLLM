@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QPushButton>
 
 namespace QtLLM
 {
@@ -48,8 +49,13 @@ namespace QtLLM
         // Connect the usage statistics panel to a live UsageHistory.
         void setUsageHistory(UsageHistory* history);
 
+        // Populate the model combo with available models (preserves current text).
+        void setAvailableModels(const QStringList& models);
+
     signals:
         void settingsApplied();
+        // Emitted when the user clicks "Modelle laden".
+        void detectModelsRequested();
 
     private slots:
         void onProviderChanged(int index);
@@ -59,11 +65,12 @@ namespace QtLLM
         void setupUI();
         void updateFieldVisibility();
 
-        QComboBox* m_providerCombo = nullptr;
-        QLineEdit* m_apiKeyEdit = nullptr;
-        QLineEdit* m_modelEdit = nullptr;
-        QLineEdit* m_endpointUrlEdit = nullptr;
-        QLineEdit* m_ollamaUrlEdit = nullptr;
+        QComboBox*   m_providerCombo = nullptr;
+        QLineEdit*   m_apiKeyEdit = nullptr;
+        QComboBox*   m_modelCombo = nullptr;
+        QPushButton* m_detectModelsBtn = nullptr;
+        QLineEdit*   m_endpointUrlEdit = nullptr;
+        QLineEdit*   m_ollamaUrlEdit = nullptr;
         QTextEdit* m_systemPromptEdit = nullptr;
         QSpinBox* m_fontSizeSpinBox = nullptr;
         QDialogButtonBox* m_buttonBox = nullptr;

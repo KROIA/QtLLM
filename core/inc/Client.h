@@ -72,6 +72,10 @@ public:
     // Persistent per-turn usage history (JSONL-backed).
     UsageHistory* usageHistory();
 
+    // Asynchronously fetch available models from the current provider.
+    // Results arrive via modelsAvailable().
+    void fetchAvailableModels();
+
 signals:
     // Emitted after all tool calls in a turn are resolved; text is the final LLM reply.
     void responseReady(const QString& text);
@@ -87,6 +91,8 @@ signals:
     void requestFinished();
     // Emitted once per completed turn with token counts, timing, and estimated cost.
     void statsUpdated(const QtLLM::UsageStats& stats);
+    // Emitted when fetchAvailableModels() completes.
+    void modelsAvailable(const QStringList& models);
 
 private slots:
     void onProtocolResponseReady(const QString& text);

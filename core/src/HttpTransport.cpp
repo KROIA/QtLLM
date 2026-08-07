@@ -41,6 +41,24 @@ void HttpTransport::post(const QUrl& url,
     m_nam->post(request, jsonBody);
 }
 
+void HttpTransport::get(const QUrl& url,
+                        const QList<QPair<QByteArray, QByteArray>>& headers)
+{
+    if (m_busy) {
+        emit errorOccurred("Request already in progress");
+        return;
+    }
+
+    m_busy = true;
+
+    QNetworkRequest request(url);
+    for (const auto& pair : headers) {
+        request.setRawHeader(pair.first, pair.second);
+    }
+
+    m_nam->get(request);
+}
+
 bool HttpTransport::isBusy() const
 {
     return m_busy;
