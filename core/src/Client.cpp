@@ -1,14 +1,19 @@
 #include "Client.h"
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
+#include "UsageSample.h"
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QDateTime>
 
 namespace QtLLM {
 
 Client::Client(const QString& apiKey, const QString& url, QObject* parent)
     : QObject(parent)
     , m_protocol(new ClaudeProtocol(apiKey, QUrl(url), this))
+    , m_usageHistory(new UsageHistory(this))
+    , m_currentModel("claude-opus-4-5")
+    , m_currentProvider("claude")
 {
     connectProtocol();
 }
@@ -16,14 +21,19 @@ Client::Client(const QString& apiKey, const QString& url, QObject* parent)
 Client::Client(Provider provider, const QString& url, const QString& apiKey, QObject* parent)
     : QObject(parent)
     , m_protocol(nullptr)
+    , m_usageHistory(new UsageHistory(this))
 {
     switch (provider) {
     case Provider::Ollama:
         m_protocol = new OllamaProtocol(QUrl(url), this);
+        m_currentProvider = "ollama";
+        m_currentModel    = "llama3.2";
         break;
     case Provider::Claude:
     default:
         m_protocol = new ClaudeProtocol(apiKey, QUrl(url), this);
+        m_currentProvider = "claude";
+        m_currentModel    = "claude-opus-4-5";
         break;
     }
     connectProtocol();
@@ -66,6 +76,7 @@ void Client::onProtocolStatsReady(const QtLLM::UsageStats& stats)
                     + " ms=" + std::to_string(stats.durationMs));
 #endif
     m_lastStats = stats;
+    recordSample(stats);
     emit statsUpdated(stats);
 }
 
@@ -77,7 +88,7 @@ void Client::onProtocolError(const QString& errorMessage)
     emit errorOccurred(errorMessage);
 }
 
-void Client::setModel(const QString& model)       { m_protocol->setModel(model); }
+void Client::setModel(const QString& model)       { m_currentModel = model; m_protocol->setModel(model); }
 void Client::setMaxTokens(int maxTokens)           { m_protocol->setMaxTokens(maxTokens); }
 void Client::setSystemPrompt(const QString& p)     { m_protocol->setSystemPrompt(p); }
 
@@ -195,6 +206,47 @@ QJsonArray Client::conversationHistory() const
 UsageStats Client::usageStats() const
 {
     return m_lastStats;
+}
+
+UsageHistory* Client::usageHistory()
+{
+    return m_usageHistory;
+}
+
+void Client::recordSample(const UsageStats& stats)
+{
+    UsageSample sample;
+    sample.timestampMsEpoch         = QDateTime::currentMSecsSinceEpoch();
+    sample.model                    = m_currentModel;
+    sample.provider                 = m_currentProvider;
+    sample.inputTokens              = stats.inputTokens;
+    sample.outputTokens             = stats.outputTokens;
+    sample.cacheReadInputTokens     = stats.cacheReadInputTokens;
+    sample.cacheCreationInputTokens = stats.cacheCreationInputTokens;
+    sample.toolCalls                = stats.toolCalls;
+    sample.durationMs               = stats.durationMs;
+
+    // Est. per-turn cost reflecting prompt-caching pricing.
+    // Cache reads cost ~10% of input price; cache writes cost ~125% (5-min ephemeral premium).
+    // Ollama stays 0.
+    sample.costUsd = 0.0;
+    if (m_currentProvider == "claude") {
+        double inPrice = 0, outPrice = 0;
+        const QString m = m_currentModel.toLower();
+        if      (m.contains("opus-4"))   { inPrice = 15.0;  outPrice = 75.0; }
+        else if (m.contains("sonnet-4")) { inPrice = 3.0;   outPrice = 15.0; }
+        else if (m.contains("haiku-4"))  { inPrice = 0.80;  outPrice = 4.0;  }
+        else if (m.contains("opus-3"))   { inPrice = 15.0;  outPrice = 75.0; }
+        else if (m.contains("sonnet-3")) { inPrice = 3.0;   outPrice = 15.0; }
+        else if (m.contains("haiku-3"))  { inPrice = 0.25;  outPrice = 1.25; }
+        sample.costUsd = (stats.inputTokens              * inPrice
+                        + stats.cacheReadInputTokens     * 0.1  * inPrice
+                        + stats.cacheCreationInputTokens * 1.25 * inPrice)
+                         / 1'000'000.0
+                       + (stats.outputTokens * outPrice) / 1'000'000.0;
+    }
+
+    m_usageHistory->append(sample);
 }
 
 } // namespace QtLLM

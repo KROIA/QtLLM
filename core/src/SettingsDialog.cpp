@@ -1,6 +1,9 @@
 #include "SettingsDialog.h"
+#include "UsageStatsWidget.h"
+#include "UsageHistory.h"
 #include <QVBoxLayout>
 #include <QPushButton>
+#include <QTabWidget>
 
 namespace QtLLM
 {
@@ -18,50 +21,64 @@ namespace QtLLM
     void SettingsDialog::setupUI()
     {
         setWindowTitle("LLM Settings");
-        setMinimumSize(450, 400);
+        setMinimumSize(600, 500);
 
         QVBoxLayout* mainLayout = new QVBoxLayout(this);
+
+        m_tabWidget = new QTabWidget(this);
+
+        // ---- Settings tab ----
+        QWidget* settingsPage = new QWidget(this);
+        QVBoxLayout* settingsLayout = new QVBoxLayout(settingsPage);
         QFormLayout* formLayout = new QFormLayout();
 
-        m_providerCombo = new QComboBox(this);
+        m_providerCombo = new QComboBox(settingsPage);
         m_providerCombo->addItem("Claude (Anthropic)");
         m_providerCombo->addItem("Ollama (Local)");
         formLayout->addRow("Provider:", m_providerCombo);
 
-        m_apiKeyLabel = new QLabel("API Key:", this);
-        m_apiKeyEdit = new QLineEdit(this);
+        m_apiKeyLabel = new QLabel("API Key:", settingsPage);
+        m_apiKeyEdit = new QLineEdit(settingsPage);
         m_apiKeyEdit->setEchoMode(QLineEdit::Password);
         formLayout->addRow(m_apiKeyLabel, m_apiKeyEdit);
 
-        m_endpointUrlLabel = new QLabel("Endpoint URL:", this);
-        m_endpointUrlEdit = new QLineEdit(this);
+        m_endpointUrlLabel = new QLabel("Endpoint URL:", settingsPage);
+        m_endpointUrlEdit = new QLineEdit(settingsPage);
         m_endpointUrlEdit->setText("https://api.anthropic.com/v1/messages");
         formLayout->addRow(m_endpointUrlLabel, m_endpointUrlEdit);
 
-        m_modelEdit = new QLineEdit(this);
+        m_modelEdit = new QLineEdit(settingsPage);
         m_modelEdit->setText("claude-haiku-4-5");
         formLayout->addRow("Model:", m_modelEdit);
 
-        m_ollamaUrlLabel = new QLabel("Ollama URL:", this);
-        m_ollamaUrlEdit = new QLineEdit(this);
+        m_ollamaUrlLabel = new QLabel("Ollama URL:", settingsPage);
+        m_ollamaUrlEdit = new QLineEdit(settingsPage);
         m_ollamaUrlEdit->setText("http://localhost:11434");
         formLayout->addRow(m_ollamaUrlLabel, m_ollamaUrlEdit);
 
-        m_systemPromptEdit = new QTextEdit(this);
+        m_systemPromptEdit = new QTextEdit(settingsPage);
         m_systemPromptEdit->setMinimumHeight(80);
         m_systemPromptEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         formLayout->addRow("System Prompt:", m_systemPromptEdit);
 
-        m_fontSizeLabel = new QLabel("Font Size:", this);
-        m_fontSizeSpinBox = new QSpinBox(this);
+        m_fontSizeLabel = new QLabel("Font Size:", settingsPage);
+        m_fontSizeSpinBox = new QSpinBox(settingsPage);
         m_fontSizeSpinBox->setRange(50, 200);
         m_fontSizeSpinBox->setValue(100);
         m_fontSizeSpinBox->setSuffix(" %");
         m_fontSizeSpinBox->setSingleStep(10);
         formLayout->addRow(m_fontSizeLabel, m_fontSizeSpinBox);
 
-        mainLayout->addLayout(formLayout, 1);
-        mainLayout->addStretch();
+        settingsLayout->addLayout(formLayout, 1);
+        settingsLayout->addStretch();
+
+        m_tabWidget->addTab(settingsPage, "Settings");
+
+        // ---- Statistik tab ----
+        m_statsWidget = new UsageStatsWidget(this);
+        m_tabWidget->addTab(m_statsWidget, QString::fromUtf16(u"Statistik"));
+
+        mainLayout->addWidget(m_tabWidget, 1);
 
         m_buttonBox = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
         m_buttonBox->button(QDialogButtonBox::Apply)->setDefault(true);
@@ -126,4 +143,10 @@ namespace QtLLM
     void SettingsDialog::setFontSizePercent(int percent) { m_fontSizeSpinBox->setValue(percent); }
 
     void SettingsDialog::setFontSizeLabel(const QString& text) { m_fontSizeLabel->setText(text); }
+
+    void SettingsDialog::setUsageHistory(UsageHistory* history)
+    {
+        if (m_statsWidget)
+            m_statsWidget->setUsageHistory(history);
+    }
 }

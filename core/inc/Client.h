@@ -3,6 +3,7 @@
 #include "Tool.h"
 #include "ProtocolBase.h"
 #include "UsageStats.h"
+#include "UsageHistory.h"
 #include <QObject>
 #include <QString>
 #include <QJsonArray>
@@ -68,6 +69,9 @@ public:
     // Returns the statistics from the most recently completed turn.
     UsageStats usageStats() const;
 
+    // Persistent per-turn usage history (JSONL-backed).
+    UsageHistory* usageHistory();
+
 signals:
     // Emitted after all tool calls in a turn are resolved; text is the final LLM reply.
     void responseReady(const QString& text);
@@ -99,10 +103,15 @@ private:
         ToolHandler handler;
     };
 
+    void recordSample(const UsageStats& stats);
+
     QMap<QString, RegisteredTool> m_tools;
     QJsonArray                    m_history;
     ProtocolBase*                 m_protocol;
     UsageStats                    m_lastStats;
+    UsageHistory*                 m_usageHistory;
+    QString                       m_currentModel;
+    QString                       m_currentProvider;
 
 #if LOGGER_LIBRARY_AVAILABLE == 1
     Log::LogObject m_logger{Logger::getID(), "QtLLM::Client"};

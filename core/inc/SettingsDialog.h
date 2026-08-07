@@ -8,9 +8,13 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QSpinBox>
+#include <QTabWidget>
 
 namespace QtLLM
 {
+    class UsageHistory;
+    class UsageStatsWidget;
+
     class QT_LLM_API SettingsDialog : public QDialog
     {
         Q_OBJECT
@@ -41,6 +45,9 @@ namespace QtLLM
 
         void setFontSizeLabel(const QString& text);
 
+        // Connect the usage statistics panel to a live UsageHistory.
+        void setUsageHistory(UsageHistory* history);
+
     signals:
         void settingsApplied();
 
@@ -65,5 +72,8 @@ namespace QtLLM
         QLabel* m_endpointUrlLabel = nullptr;
         QLabel* m_ollamaUrlLabel = nullptr;
         QLabel* m_fontSizeLabel = nullptr;
+
+        QTabWidget*       m_tabWidget = nullptr;
+        UsageStatsWidget* m_statsWidget = nullptr;
     };
 }
