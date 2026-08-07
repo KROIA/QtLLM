@@ -71,15 +71,19 @@ private:
 
     // Stats tracking
     QElapsedTimer m_turnTimer;
-    int    m_turnInputTokens  = 0;
-    int    m_turnOutputTokens = 0;
-    int    m_turnToolCalls    = 0;
-    bool   m_turnTimerStarted = false;
-    int    m_sessionInputTokens  = 0;
-    int    m_sessionOutputTokens = 0;
-    int    m_sessionToolCalls    = 0;
-    int    m_sessionTurnCount    = 0;
-    double m_sessionCostUsd      = 0.0;
+    int    m_turnInputTokens              = 0;
+    int    m_turnOutputTokens             = 0;
+    int    m_turnCacheCreationInputTokens = 0;
+    int    m_turnCacheReadInputTokens     = 0;
+    int    m_turnToolCalls                = 0;
+    bool   m_turnTimerStarted             = false;
+    int    m_sessionInputTokens              = 0;
+    int    m_sessionOutputTokens             = 0;
+    int    m_sessionCacheCreationInputTokens = 0;
+    int    m_sessionCacheReadInputTokens     = 0;
+    int    m_sessionToolCalls                = 0;
+    int    m_sessionTurnCount                = 0;
+    double m_sessionCostUsd                  = 0.0;
 };
 
 } // namespace QtLLM

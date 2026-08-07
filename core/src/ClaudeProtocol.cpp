@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QDebug>
 
 namespace QtLLM
 {
@@ -63,12 +64,14 @@ void ClaudeProtocol::beginTurn(const QString& userMessage)
 
 void ClaudeProtocol::startNewTurn(const QString& userMessage)
 {
-    m_turnInProgress      = true;
-    m_turnInputTokens     = 0;
-    m_turnOutputTokens    = 0;
-    m_turnToolCalls       = 0;
-    m_turnToolIterations  = 0;
-    m_turnTimerStarted    = false;
+    m_turnInProgress              = true;
+    m_turnInputTokens             = 0;
+    m_turnOutputTokens            = 0;
+    m_turnCacheCreationInputTokens = 0;
+    m_turnCacheReadInputTokens    = 0;
+    m_turnToolCalls               = 0;
+    m_turnToolIterations          = 0;
+    m_turnTimerStarted            = false;
 
     QJsonObject msg;
     msg["role"]    = "user";
@@ -98,6 +101,9 @@ void ClaudeProtocol::sendRequest()
     QList<QPair<QByteArray, QByteArray>> headers;
     headers.append({"x-api-key",        m_apiKey.toUtf8()});
     headers.append({ QByteArray("anthropic-version"), QByteArray("2023-06-01")});
+    // Prompt caching with ephemeral cache_control works on the first-party API
+    // without a beta header.  If a Foundry/Azure endpoint rejects cache_control,
+    // add:  headers.append({"anthropic-beta", "prompt-caching-2024-07-31"});
     m_transport->post(m_url, bytes, headers);
 }
 
@@ -108,11 +114,13 @@ void ClaudeProtocol::clearHistory()
 
 void ClaudeProtocol::clearStats()
 {
-    m_sessionInputTokens  = 0;
-    m_sessionOutputTokens = 0;
-    m_sessionToolCalls    = 0;
-    m_sessionTurnCount    = 0;
-    m_sessionCostUsd      = 0.0;
+    m_sessionInputTokens              = 0;
+    m_sessionOutputTokens             = 0;
+    m_sessionCacheCreationInputTokens = 0;
+    m_sessionCacheReadInputTokens     = 0;
+    m_sessionToolCalls                = 0;
+    m_sessionTurnCount                = 0;
+    m_sessionCostUsd                  = 0.0;
 }
 
 QJsonObject ClaudeProtocol::buildRequestBody() const
@@ -120,19 +128,65 @@ QJsonObject ClaudeProtocol::buildRequestBody() const
     QJsonObject body;
     body["model"]      = m_model;
     body["max_tokens"] = m_maxTokens;
-    body["messages"]   = m_history;
-
-    if (!m_systemPrompt.isEmpty()) {
-        body["system"] = m_systemPrompt;
-    }
 
     if (!m_toolSchemas.isEmpty()) {
         QJsonArray tools;
-        for (const QJsonObject& schema : m_toolSchemas) {
+        for (const QJsonObject& schema : m_toolSchemas)
             tools.append(schema);
-        }
         body["tools"] = tools;
     }
+
+    // System prompt as a cached content-block array (caches tools + system together
+    // because Anthropic render order is tools -> system -> messages).
+    if (!m_systemPrompt.isEmpty()) {
+        QJsonObject cacheControl;
+        cacheControl["type"] = "ephemeral";
+
+        QJsonObject sysBlock;
+        sysBlock["type"]          = "text";
+        sysBlock["text"]          = m_systemPrompt;
+        sysBlock["cache_control"] = cacheControl;
+
+        QJsonArray systemArr;
+        systemArr.append(sysBlock);
+        body["system"] = systemArr;
+    }
+
+    // Build a transient messages copy with a rolling cache breakpoint on the
+    // last message's last content block.  We never mutate m_history itself —
+    // persisting cache_control into history would scatter >4 breakpoints across
+    // repeated requests and drift the cached prefix.
+    QJsonArray messages = m_history;
+    if (!messages.isEmpty()) {
+        QJsonObject cacheControl;
+        cacheControl["type"] = "ephemeral";
+
+        QJsonObject lastMsg = messages.last().toObject();
+        QJsonValue  content = lastMsg["content"];
+
+        if (content.isArray()) {
+            QJsonArray blocks = content.toArray();
+            if (!blocks.isEmpty()) {
+                QJsonObject lastBlock = blocks.last().toObject();
+                lastBlock["cache_control"] = cacheControl;
+                blocks[blocks.size() - 1] = lastBlock;
+                lastMsg["content"] = blocks;
+            }
+        } else {
+            // Plain string content — convert to a single cached text block
+            QJsonObject textBlock;
+            textBlock["type"]          = "text";
+            textBlock["text"]          = content.toString();
+            textBlock["cache_control"] = cacheControl;
+
+            QJsonArray blocks;
+            blocks.append(textBlock);
+            lastMsg["content"] = blocks;
+        }
+
+        messages[messages.size() - 1] = lastMsg;
+    }
+    body["messages"] = messages;
 
     return body;
 }
@@ -163,8 +217,10 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
 {
     // Accumulate token usage from this response (may be one of several in a tool loop)
     QJsonObject usage = responseJson["usage"].toObject();
-    m_turnInputTokens  += usage["input_tokens"].toInt();
-    m_turnOutputTokens += usage["output_tokens"].toInt();
+    m_turnInputTokens              += usage["input_tokens"].toInt();
+    m_turnOutputTokens             += usage["output_tokens"].toInt();
+    m_turnCacheCreationInputTokens += usage["cache_creation_input_tokens"].toInt();
+    m_turnCacheReadInputTokens     += usage["cache_read_input_tokens"].toInt();
 
     QString    stopReason = responseJson["stop_reason"].toString();
     QJsonArray content    = responseJson["content"].toArray();
@@ -178,9 +234,11 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         QString text = assembleText(content);
 
         // Finalize session stats
-        m_sessionInputTokens  += m_turnInputTokens;
-        m_sessionOutputTokens += m_turnOutputTokens;
-        m_sessionToolCalls    += m_turnToolCalls;
+        m_sessionInputTokens              += m_turnInputTokens;
+        m_sessionOutputTokens             += m_turnOutputTokens;
+        m_sessionCacheCreationInputTokens += m_turnCacheCreationInputTokens;
+        m_sessionCacheReadInputTokens     += m_turnCacheReadInputTokens;
+        m_sessionToolCalls                += m_turnToolCalls;
         ++m_sessionTurnCount;
 
         auto [inPrice, outPrice] = modelPricing();
@@ -188,16 +246,26 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
                         + (m_turnOutputTokens / 1'000'000.0) * outPrice;
         m_sessionCostUsd += turnCost;
 
+        qDebug() << "ClaudeProtocol turn stats:"
+                 << "in=" << m_turnInputTokens
+                 << "out=" << m_turnOutputTokens
+                 << "cache_read=" << m_turnCacheReadInputTokens
+                 << "cache_creation=" << m_turnCacheCreationInputTokens;
+
         UsageStats stats;
-        stats.inputTokens         = m_turnInputTokens;
-        stats.outputTokens        = m_turnOutputTokens;
-        stats.toolCalls           = m_turnToolCalls;
-        stats.durationMs          = m_turnTimer.elapsed();
-        stats.sessionInputTokens  = m_sessionInputTokens;
-        stats.sessionOutputTokens = m_sessionOutputTokens;
-        stats.sessionToolCalls    = m_sessionToolCalls;
-        stats.sessionTurnCount    = m_sessionTurnCount;
-        stats.sessionCostUsd      = m_sessionCostUsd;
+        stats.inputTokens              = m_turnInputTokens;
+        stats.outputTokens             = m_turnOutputTokens;
+        stats.cacheCreationInputTokens = m_turnCacheCreationInputTokens;
+        stats.cacheReadInputTokens     = m_turnCacheReadInputTokens;
+        stats.toolCalls                = m_turnToolCalls;
+        stats.durationMs               = m_turnTimer.elapsed();
+        stats.sessionInputTokens              = m_sessionInputTokens;
+        stats.sessionOutputTokens             = m_sessionOutputTokens;
+        stats.sessionCacheCreationInputTokens = m_sessionCacheCreationInputTokens;
+        stats.sessionCacheReadInputTokens     = m_sessionCacheReadInputTokens;
+        stats.sessionToolCalls                = m_sessionToolCalls;
+        stats.sessionTurnCount                = m_sessionTurnCount;
+        stats.sessionCostUsd                  = m_sessionCostUsd;
 
         emit requestFinished();
         emit responseReady(text);
@@ -227,9 +295,11 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
             if (capText.isEmpty())
                 capText = "[Tool-use iteration limit reached]";
 
-            m_sessionInputTokens  += m_turnInputTokens;
-            m_sessionOutputTokens += m_turnOutputTokens;
-            m_sessionToolCalls    += m_turnToolCalls;
+            m_sessionInputTokens              += m_turnInputTokens;
+            m_sessionOutputTokens             += m_turnOutputTokens;
+            m_sessionCacheCreationInputTokens += m_turnCacheCreationInputTokens;
+            m_sessionCacheReadInputTokens     += m_turnCacheReadInputTokens;
+            m_sessionToolCalls                += m_turnToolCalls;
             ++m_sessionTurnCount;
 
             auto [inPrice, outPrice] = modelPricing();
@@ -237,16 +307,26 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
                             + (m_turnOutputTokens / 1'000'000.0) * outPrice;
             m_sessionCostUsd += turnCost;
 
+            qDebug() << "ClaudeProtocol turn stats (cap hit):"
+                     << "in=" << m_turnInputTokens
+                     << "out=" << m_turnOutputTokens
+                     << "cache_read=" << m_turnCacheReadInputTokens
+                     << "cache_creation=" << m_turnCacheCreationInputTokens;
+
             UsageStats stats;
-            stats.inputTokens         = m_turnInputTokens;
-            stats.outputTokens        = m_turnOutputTokens;
-            stats.toolCalls           = m_turnToolCalls;
-            stats.durationMs          = m_turnTimer.elapsed();
-            stats.sessionInputTokens  = m_sessionInputTokens;
-            stats.sessionOutputTokens = m_sessionOutputTokens;
-            stats.sessionToolCalls    = m_sessionToolCalls;
-            stats.sessionTurnCount    = m_sessionTurnCount;
-            stats.sessionCostUsd      = m_sessionCostUsd;
+            stats.inputTokens              = m_turnInputTokens;
+            stats.outputTokens             = m_turnOutputTokens;
+            stats.cacheCreationInputTokens = m_turnCacheCreationInputTokens;
+            stats.cacheReadInputTokens     = m_turnCacheReadInputTokens;
+            stats.toolCalls                = m_turnToolCalls;
+            stats.durationMs               = m_turnTimer.elapsed();
+            stats.sessionInputTokens              = m_sessionInputTokens;
+            stats.sessionOutputTokens             = m_sessionOutputTokens;
+            stats.sessionCacheCreationInputTokens = m_sessionCacheCreationInputTokens;
+            stats.sessionCacheReadInputTokens     = m_sessionCacheReadInputTokens;
+            stats.sessionToolCalls                = m_sessionToolCalls;
+            stats.sessionTurnCount                = m_sessionTurnCount;
+            stats.sessionCostUsd                  = m_sessionCostUsd;
 
             emit errorOccurred("Tool-use iteration limit reached ("
                                + QString::number(kMaxToolIterations) + ")");
