@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QVector>
 #include <QString>
+#include <QScrollBar>
 
 namespace QtLLM {
 
@@ -66,6 +67,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
 
 private slots:
     void onRangeChanged(int index);
@@ -74,10 +76,13 @@ private slots:
     void onAppFilterChanged(int index);
     void onSampleAppended(const QtLLM::UsageSample& sample);
     void onCopyCsv();
+    void onChartTypeChanged(int index);
+    void onScrollBarChanged(int value);
 
 private:
-    enum class TimeRange { Session, Days7, Days30, All };
+    enum class TimeRange { Session, Hour1, Hour6, Days7, Days30, All };
     enum class ColourBy  { Category, Model };
+    enum class ChartType { Bars, Lines };
 
     void rebuildData();
     void rebuildModelFilter();
@@ -87,9 +92,13 @@ private:
     QVector<ModelSummary> buildSummaries(const QVector<UsageSample>& samples) const;
 
     void paintChart(QPainter& p, const QRect& area);
+    void paintLineChart(QPainter& p, const QRect& area);
+    void paintCostChart(QPainter& p, const QRect& area);
     void paintLegend(QPainter& p, const QRect& area);
     void paintSummaryTiles(QPainter& p, const QRect& area);
     void paintTooltip(QPainter& p);
+
+    void updateScrollBar();
 
     // Colour helpers
     QColor categoryColour(int index) const;  // 0=uncached, 1=cacheRead, 2=cacheWrite, 3=output
@@ -101,6 +110,7 @@ private:
 
     // Layout rects (computed in paintEvent)
     QRect m_chartRect;
+    QRect m_costChartRect;
     QRect m_legendRect;
     QRect m_tilesRect;
 
@@ -113,20 +123,30 @@ private:
 
     // Controls
     QComboBox*   m_rangeCombo       = nullptr;
+    QComboBox*   m_chartTypeCombo   = nullptr;
     QComboBox*   m_colourByCombo    = nullptr;
     QComboBox*   m_modelFilterCombo = nullptr;
     QComboBox*   m_appFilterCombo   = nullptr;
     QPushButton* m_copyCsvBtn       = nullptr;
+    QScrollBar*  m_scrollBar        = nullptr;
 
     // State
-    TimeRange m_range    = TimeRange::Session;
-    ColourBy  m_colourBy = ColourBy::Category;
+    TimeRange m_range     = TimeRange::Session;
+    ChartType m_chartType = ChartType::Bars;
+    ColourBy  m_colourBy  = ColourBy::Category;
     QString   m_modelFilter;  // empty = all
     QString   m_appFilter;    // empty = all
     int       m_hoverBucket = -1;
     QPoint    m_hoverPos;
     bool      m_darkOverride  = false;
     bool      m_darkExplicit  = false;
+
+    // Zoom/pan: visible time window (0 = show all / no zoom)
+    qint64 m_viewStartMs = 0;
+    qint64 m_viewEndMs   = 0;
+
+    // Full data-range buckets (before view clipping)
+    QVector<ChartBucket> m_allBuckets;
 
     // Category labels (fixed order)
     static constexpr int kCategoryCount = 4;

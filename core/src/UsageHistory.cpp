@@ -11,10 +11,18 @@
 
 namespace QtLLM {
 
+// Process-wide session anchor: every UsageHistory instance created in this
+// process reports the same sessionStartMs(), so "This Session" in the stats
+// widget covers the full process lifetime regardless of how many Client /
+// UsageHistory objects are created or destroyed.
+static qint64 s_processSessionStartMs = 0;
+
 UsageHistory::UsageHistory(QObject* parent)
     : QObject(parent)
-    , m_sessionStartMs(QDateTime::currentMSecsSinceEpoch())
 {
+    if (s_processSessionStartMs == 0)
+        s_processSessionStartMs = QDateTime::currentMSecsSinceEpoch();
+    m_sessionStartMs = s_processSessionStartMs;
     loadFromFile();
 }
 

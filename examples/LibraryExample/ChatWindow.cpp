@@ -193,6 +193,16 @@ void ChatWindow::connectSignals()
         else
             dlg.setProvider(QtLLM::SettingsDialog::Provider::Claude);
         dlg.setFontSizePercent(m_fontSizePercent);
+
+        // Wire usage history so the statistics tab shows live data
+        dlg.setUsageHistory(m_client.usageHistory());
+
+        // Wire model auto-detection: dialog button -> client fetch -> dialog populate
+        connect(&dlg,      &QtLLM::SettingsDialog::detectModelsRequested,
+                &m_client, &QtLLM::Client::fetchAvailableModels);
+        connect(&m_client, &QtLLM::Client::modelsAvailable,
+                &dlg,      &QtLLM::SettingsDialog::setAvailableModels);
+
         connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
             m_currentModel = dlg.model();
             m_client.setModel(dlg.model());

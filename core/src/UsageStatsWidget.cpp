@@ -2,8 +2,10 @@
 #include "UsageHistory.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QShowEvent>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -11,6 +13,7 @@
 #include <QDateTime>
 #include <QClipboard>
 #include <QApplication>
+#include <QScrollBar>
 #include <QtMath>
 
 namespace QtLLM {
@@ -64,9 +67,15 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
     controlsLayout->setContentsMargins(8, 8, 8, 0);
 
     m_rangeCombo = new QComboBox(this);
-    m_rangeCombo->addItems({"This Session", "7 Days", "30 Days", "All"});
+    m_rangeCombo->addItems({"This Session", "Last Hour", "Last 6 Hours",
+                            "7 Days", "30 Days", "All"});
     controlsLayout->addWidget(new QLabel("Range:", this));
     controlsLayout->addWidget(m_rangeCombo);
+
+    m_chartTypeCombo = new QComboBox(this);
+    m_chartTypeCombo->addItems({"Stacked bars", "Lines"});
+    controlsLayout->addWidget(new QLabel("Chart:", this));
+    controlsLayout->addWidget(m_chartTypeCombo);
 
     m_colourByCombo = new QComboBox(this);
     m_colourByCombo->addItems({"Category", "Model"});
@@ -88,11 +97,16 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
     m_copyCsvBtn = new QPushButton("Copy CSV", this);
     controlsLayout->addWidget(m_copyCsvBtn);
 
+    // Horizontal scroll bar for panning when zoomed in
+    m_scrollBar = new QScrollBar(Qt::Horizontal, this);
+    m_scrollBar->setVisible(false);
+
     // Place controls; painting happens below them
     auto* topLayout = new QVBoxLayout(this);
     topLayout->setContentsMargins(0, 0, 0, 0);
     topLayout->addLayout(controlsLayout);
     topLayout->addStretch();
+    topLayout->addWidget(m_scrollBar);
 
     connect(m_rangeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &UsageStatsWidget::onRangeChanged);
@@ -104,6 +118,10 @@ UsageStatsWidget::UsageStatsWidget(QWidget* parent)
             this, &UsageStatsWidget::onAppFilterChanged);
     connect(m_copyCsvBtn, &QPushButton::clicked,
             this, &UsageStatsWidget::onCopyCsv);
+    connect(m_chartTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &UsageStatsWidget::onChartTypeChanged);
+    connect(m_scrollBar, &QScrollBar::valueChanged,
+            this, &UsageStatsWidget::onScrollBarChanged);
 
     // Fallback history: a self-loading, read-only view of the persisted JSONL so
     // the panel shows data even if the consumer never calls setUsageHistory().
@@ -164,7 +182,11 @@ void UsageStatsWidget::setDarkMode(bool dark)
 void UsageStatsWidget::onRangeChanged(int index)
 {
     m_range = static_cast<TimeRange>(index);
+    // Reset zoom/pan on range change
+    m_viewStartMs = 0;
+    m_viewEndMs   = 0;
     rebuildData();
+    updateScrollBar();
     update();
 }
 
@@ -219,6 +241,41 @@ void UsageStatsWidget::onCopyCsv()
     QApplication::clipboard()->setText(csv);
 }
 
+void UsageStatsWidget::onChartTypeChanged(int index)
+{
+    m_chartType = static_cast<ChartType>(index);
+    update();
+}
+
+void UsageStatsWidget::onScrollBarChanged(int value)
+{
+    if (m_allBuckets.isEmpty() || m_viewStartMs == 0)
+        return;
+
+    qint64 fullStart = m_allBuckets.first().fromMs;
+    qint64 fullEnd   = m_allBuckets.last().toMs;
+    qint64 viewSpan  = m_viewEndMs - m_viewStartMs;
+
+    qint64 fullSpan  = fullEnd - fullStart;
+    if (fullSpan <= 0) return;
+
+    // Map scrollbar value (0..1000) to offset within the full range
+    double frac = value / 1000.0;
+    qint64 newStart = fullStart + static_cast<qint64>(frac * (fullSpan - viewSpan));
+    qint64 newEnd   = newStart + viewSpan;
+    if (newEnd > fullEnd) {
+        newEnd   = fullEnd;
+        newStart = newEnd - viewSpan;
+    }
+    if (newStart < fullStart)
+        newStart = fullStart;
+
+    m_viewStartMs = newStart;
+    m_viewEndMs   = newEnd;
+    rebuildData();
+    update();
+}
+
 // ---------------------------------------------------------------------------
 // Data rebuilding
 // ---------------------------------------------------------------------------
@@ -231,6 +288,8 @@ QVector<UsageSample> UsageStatsWidget::filteredSamples() const
     qint64 fromMs = 0;
     switch (m_range) {
     case TimeRange::Session: fromMs = m_history->sessionStartMs(); break;
+    case TimeRange::Hour1:   fromMs = now - qint64(3600)  * 1000; break;
+    case TimeRange::Hour6:   fromMs = now - qint64(21600) * 1000; break;
     case TimeRange::Days7:   fromMs = now - qint64(7)  * 86400 * 1000; break;
     case TimeRange::Days30:  fromMs = now - qint64(30) * 86400 * 1000; break;
     case TimeRange::All:     fromMs = 0; break;
@@ -252,8 +311,8 @@ QVector<UsageSample> UsageStatsWidget::filteredSamples() const
 void UsageStatsWidget::rebuildData()
 {
     auto samples = filteredSamples();
-    m_buckets   = buildBuckets(samples);
-    m_summaries = buildSummaries(samples);
+    m_allBuckets = buildBuckets(samples);
+    m_summaries  = buildSummaries(samples);
 
     // Build stable model list
     QSet<QString> seen;
@@ -263,6 +322,17 @@ void UsageStatsWidget::rebuildData()
             seen.insert(s.model);
             m_allModels.append(s.model);
         }
+    }
+
+    // Apply view window (zoom clipping)
+    if (m_viewStartMs > 0 && m_viewEndMs > m_viewStartMs && !m_allBuckets.isEmpty()) {
+        m_buckets.clear();
+        for (const ChartBucket& b : m_allBuckets) {
+            if (b.toMs >= m_viewStartMs && b.fromMs <= m_viewEndMs)
+                m_buckets.append(b);
+        }
+    } else {
+        m_buckets = m_allBuckets;
     }
 }
 
@@ -307,6 +377,8 @@ QVector<ChartBucket> UsageStatsWidget::buildBuckets(const QVector<UsageSample>& 
         spanMs = now - sessionStart;
         break;
     }
+    case TimeRange::Hour1:  spanMs = qint64(3600)  * 1000; break;
+    case TimeRange::Hour6:  spanMs = qint64(21600) * 1000; break;
     case TimeRange::Days7:  spanMs = qint64(7)  * 86400 * 1000; break;
     case TimeRange::Days30: spanMs = qint64(30) * 86400 * 1000; break;
     case TimeRange::All: {
@@ -446,31 +518,46 @@ void UsageStatsWidget::paintEvent(QPaintEvent* /*event*/)
     p.setPen(textColor);
 
     int controlsHeight = 40;
+    int scrollBarHeight = m_scrollBar->isVisible() ? m_scrollBar->height() + 4 : 0;
     int margin = 12;
     int legendHeight = 30;
+    int costChartHeight = 100;  // fixed height for the cost line chart
     int tilesHeight  = 0;
 
     // Compute tiles height: one row per model, ~50px each
     if (!m_summaries.isEmpty())
         tilesHeight = qMin(static_cast<int>(m_summaries.size()), 4) * 55 + 10;
 
-    int availH = height() - controlsHeight - margin * 2;
-
     m_legendRect = QRect(margin, controlsHeight + margin,
                          width() - margin * 2, legendHeight);
-    m_tilesRect  = QRect(margin, height() - tilesHeight - margin,
+    m_tilesRect  = QRect(margin, height() - tilesHeight - margin - scrollBarHeight,
                          width() - margin * 2, tilesHeight);
+
+    // Cost chart sits above the tiles
+    m_costChartRect = QRect(margin, m_tilesRect.top() - costChartHeight - 8,
+                            width() - margin * 2, costChartHeight);
+
+    // Token chart fills the remaining space
     m_chartRect  = QRect(margin, m_legendRect.bottom() + 8,
                          width() - margin * 2,
-                         m_tilesRect.top() - m_legendRect.bottom() - 16);
+                         m_costChartRect.top() - m_legendRect.bottom() - 16);
 
     if (m_chartRect.height() < 60) {
+        // Not enough room; drop tiles and cost chart
+        int availH = height() - controlsHeight - margin * 2 - scrollBarHeight;
         m_chartRect.setHeight(availH - legendHeight - 20);
         m_tilesRect = QRect();
+        m_costChartRect = QRect();
     }
 
     paintLegend(p, m_legendRect);
-    paintChart(p, m_chartRect);
+    if (m_chartType == ChartType::Lines)
+        paintLineChart(p, m_chartRect);
+    else
+        paintChart(p, m_chartRect);
+
+    if (!m_costChartRect.isNull())
+        paintCostChart(p, m_costChartRect);
     if (!m_tilesRect.isNull())
         paintSummaryTiles(p, m_tilesRect);
     if (m_hoverBucket >= 0)
@@ -724,6 +811,344 @@ void UsageStatsWidget::paintTooltip(QPainter& p)
         p.drawText(tipRect.x() + 8, y + fm.ascent(), l);
         y += lineH;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Line chart rendering
+// ---------------------------------------------------------------------------
+
+void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
+{
+    QColor textColor = palette().windowText().color();
+    QColor gridColor = textColor;
+    gridColor.setAlphaF(0.15);
+
+    if (m_buckets.isEmpty()) {
+        p.setPen(textColor);
+        QFont f = font();
+        f.setPointSize(12);
+        p.setFont(f);
+        p.drawText(area, Qt::AlignCenter, "No usage data in this range");
+        return;
+    }
+
+    // Find max Y
+    int maxY = 1;
+    for (const ChartBucket& b : m_buckets) {
+        int val = b.totalTokens();
+        if (val > maxY) maxY = val;
+    }
+    int magnitude = static_cast<int>(qPow(10, qFloor(qLn(maxY) / qLn(10))));
+    if (magnitude < 1) magnitude = 1;
+    maxY = ((maxY / magnitude) + 1) * magnitude;
+
+    int leftAxisWidth = 60;
+    int bottomAxisHeight = 20;
+    QRect plotArea(area.x() + leftAxisWidth, area.y(),
+                   area.width() - leftAxisWidth, area.height() - bottomAxisHeight);
+
+    // Grid lines
+    QFont axisFont = font();
+    axisFont.setPointSize(7);
+    p.setFont(axisFont);
+    p.setPen(gridColor);
+    for (int i = 1; i <= 4; ++i) {
+        int y = plotArea.bottom() - (plotArea.height() * i / 4);
+        p.drawLine(plotArea.left(), y, plotArea.right(), y);
+        int val = maxY * i / 4;
+        p.setPen(textColor);
+        p.drawText(QRect(area.x(), y - 8, leftAxisWidth - 6, 16),
+                   Qt::AlignRight | Qt::AlignVCenter, humanTokens(val));
+        p.setPen(gridColor);
+    }
+
+    int numBuckets = m_buckets.size();
+    double stepX = (numBuckets <= 1) ? 0 : static_cast<double>(plotArea.width()) / (numBuckets - 1);
+
+    auto xForBucket = [&](int i) -> double {
+        if (numBuckets <= 1) return plotArea.center().x();
+        return plotArea.x() + i * stepX;
+    };
+    auto yForValue = [&](int val) -> double {
+        return plotArea.bottom() - static_cast<double>(val) / maxY * plotArea.height();
+    };
+
+    if (m_colourBy == ColourBy::Category) {
+        // Draw 4 polylines: uncached, cacheRead, cacheWrite, output
+        auto drawLine = [&](int catIdx, std::function<int(const ChartBucket&)> valueFn) {
+            if (numBuckets < 1) return;
+            QPainterPath path;
+            path.moveTo(xForBucket(0), yForValue(valueFn(m_buckets[0])));
+            for (int i = 1; i < numBuckets; ++i)
+                path.lineTo(xForBucket(i), yForValue(valueFn(m_buckets[i])));
+
+            QPen pen(categoryColour(catIdx), 2);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+        };
+
+        drawLine(0, [](const ChartBucket& b) { return b.uncachedInput; });
+        drawLine(1, [](const ChartBucket& b) { return b.cacheRead; });
+        drawLine(2, [](const ChartBucket& b) { return b.cacheWrite; });
+        drawLine(3, [](const ChartBucket& b) { return b.output; });
+    } else {
+        // One polyline per model
+        for (int mi = 0; mi < m_allModels.size() && mi <= kMaxModelColours; ++mi) {
+            int colIdx = (mi < kMaxModelColours) ? mi : kMaxModelColours;
+            const QString& model = m_allModels[mi];
+
+            QPainterPath path;
+            bool started = false;
+            for (int i = 0; i < numBuckets; ++i) {
+                int val = m_buckets[i].perModel.value(model, 0);
+                double px = xForBucket(i);
+                double py = yForValue(val);
+                if (!started) { path.moveTo(px, py); started = true; }
+                else          path.lineTo(px, py);
+            }
+            QPen pen(modelColour(colIdx), 2);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+        }
+    }
+
+    // Draw data points as small circles on hover
+    if (m_hoverBucket >= 0 && m_hoverBucket < numBuckets) {
+        p.setPen(Qt::NoPen);
+        double hx = xForBucket(m_hoverBucket);
+        if (m_colourBy == ColourBy::Category) {
+            int vals[kCategoryCount] = {
+                m_buckets[m_hoverBucket].uncachedInput,
+                m_buckets[m_hoverBucket].cacheRead,
+                m_buckets[m_hoverBucket].cacheWrite,
+                m_buckets[m_hoverBucket].output
+            };
+            for (int c = 0; c < kCategoryCount; ++c) {
+                p.setBrush(categoryColour(c));
+                p.drawEllipse(QPointF(hx, yForValue(vals[c])), 4, 4);
+            }
+        } else {
+            for (int mi = 0; mi < m_allModels.size() && mi <= kMaxModelColours; ++mi) {
+                int colIdx = (mi < kMaxModelColours) ? mi : kMaxModelColours;
+                int val = m_buckets[m_hoverBucket].perModel.value(m_allModels[mi], 0);
+                p.setBrush(modelColour(colIdx));
+                p.drawEllipse(QPointF(hx, yForValue(val)), 4, 4);
+            }
+        }
+    }
+
+    // X axis labels
+    p.setPen(textColor);
+    p.setFont(axisFont);
+    int labelCount = qMin(6, numBuckets);
+    for (int i = 0; i < labelCount; ++i) {
+        int bucketIdx = (numBuckets <= 1) ? 0
+                        : i * (numBuckets - 1) / (labelCount - 1);
+        double x = xForBucket(bucketIdx);
+        QString label = humanTime(m_buckets[bucketIdx].fromMs);
+        QRect labelRect(static_cast<int>(x) - 40, plotArea.bottom() + 2, 80, 16);
+        p.drawText(labelRect, Qt::AlignHCenter | Qt::AlignTop, label);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cost line chart
+// ---------------------------------------------------------------------------
+
+void UsageStatsWidget::paintCostChart(QPainter& p, const QRect& area)
+{
+    QColor textColor = palette().windowText().color();
+    QColor gridColor = textColor;
+    gridColor.setAlphaF(0.15);
+
+    // Title
+    QFont titleFont = font();
+    titleFont.setPointSize(8);
+    titleFont.setBold(true);
+    p.setFont(titleFont);
+    p.setPen(textColor);
+    p.drawText(area.x(), area.y() - 2, QString::fromUtf16(u"Kosten (est.)"));
+
+    if (m_buckets.isEmpty()) return;
+
+    // Find max cost
+    double maxCost = 0.0;
+    for (const ChartBucket& b : m_buckets) {
+        if (b.costUsd > maxCost) maxCost = b.costUsd;
+    }
+    if (maxCost <= 0.0) {
+        p.setPen(gridColor);
+        QFont f = font();
+        f.setPointSize(9);
+        p.setFont(f);
+        p.drawText(area, Qt::AlignCenter, "No cost data");
+        return;
+    }
+
+    // Round up max cost to a nice number
+    double costMag = qPow(10, qFloor(qLn(maxCost) / qLn(10)));
+    if (costMag < 0.0001) costMag = 0.0001;
+    maxCost = qCeil(maxCost / costMag) * costMag;
+
+    int leftAxisWidth = 60;
+    int bottomAxisHeight = 14;
+    QRect plotArea(area.x() + leftAxisWidth, area.y() + 12,
+                   area.width() - leftAxisWidth, area.height() - bottomAxisHeight - 12);
+
+    // Grid lines (2 lines)
+    QFont axisFont = font();
+    axisFont.setPointSize(7);
+    p.setFont(axisFont);
+    for (int i = 1; i <= 2; ++i) {
+        int y = plotArea.bottom() - (plotArea.height() * i / 2);
+        p.setPen(gridColor);
+        p.drawLine(plotArea.left(), y, plotArea.right(), y);
+        double val = maxCost * i / 2;
+        p.setPen(textColor);
+        QString label = (val >= 0.01) ? QString("$%1").arg(val, 0, 'f', 2)
+                                      : QString("$%1").arg(val, 0, 'f', 4);
+        p.drawText(QRect(area.x(), y - 8, leftAxisWidth - 6, 16),
+                   Qt::AlignRight | Qt::AlignVCenter, label);
+    }
+
+    // Draw cost polyline
+    int numBuckets = m_buckets.size();
+    double stepX = (numBuckets <= 1) ? 0 : static_cast<double>(plotArea.width()) / (numBuckets - 1);
+
+    QColor costColour = isDark() ? QColor(255, 160, 60) : QColor(230, 120, 20);
+
+    QPainterPath path;
+    for (int i = 0; i < numBuckets; ++i) {
+        double px = (numBuckets <= 1) ? plotArea.center().x() : plotArea.x() + i * stepX;
+        double py = plotArea.bottom() - (m_buckets[i].costUsd / maxCost) * plotArea.height();
+        if (i == 0) path.moveTo(px, py);
+        else        path.lineTo(px, py);
+    }
+
+    QPen costPen(costColour, 2);
+    p.setPen(costPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(path);
+
+    // Fill under the curve with translucent colour
+    if (numBuckets > 1) {
+        QPainterPath fillPath = path;
+        double lastX = plotArea.x() + (numBuckets - 1) * stepX;
+        fillPath.lineTo(lastX, plotArea.bottom());
+        fillPath.lineTo(plotArea.x(), plotArea.bottom());
+        fillPath.closeSubpath();
+        QColor fillCol = costColour;
+        fillCol.setAlphaF(0.15);
+        p.fillPath(fillPath, fillCol);
+    }
+
+    // Hover dot on cost chart
+    if (m_hoverBucket >= 0 && m_hoverBucket < numBuckets) {
+        double hx = (numBuckets <= 1) ? plotArea.center().x() : plotArea.x() + m_hoverBucket * stepX;
+        double hy = plotArea.bottom() - (m_buckets[m_hoverBucket].costUsd / maxCost) * plotArea.height();
+        p.setPen(Qt::NoPen);
+        p.setBrush(costColour);
+        p.drawEllipse(QPointF(hx, hy), 4, 4);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Zoom / pan
+// ---------------------------------------------------------------------------
+
+void UsageStatsWidget::wheelEvent(QWheelEvent* event)
+{
+    if (m_allBuckets.isEmpty()) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    qint64 fullStart = m_allBuckets.first().fromMs;
+    qint64 fullEnd   = m_allBuckets.last().toMs;
+    qint64 fullSpan  = fullEnd - fullStart;
+    if (fullSpan <= 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    // Current view or full range
+    qint64 viewStart = (m_viewStartMs > 0) ? m_viewStartMs : fullStart;
+    qint64 viewEnd   = (m_viewEndMs > 0)   ? m_viewEndMs   : fullEnd;
+    qint64 viewSpan  = viewEnd - viewStart;
+
+    // Zoom factor: scroll up = zoom in, scroll down = zoom out
+    double zoomFactor = (event->angleDelta().y() > 0) ? 0.8 : 1.25;
+    qint64 newSpan = static_cast<qint64>(viewSpan * zoomFactor);
+
+    // Clamp: don't zoom out past full range, don't zoom in below 5 seconds
+    if (newSpan >= fullSpan) {
+        // Fully zoomed out — reset
+        m_viewStartMs = 0;
+        m_viewEndMs   = 0;
+        rebuildData();
+        updateScrollBar();
+        update();
+        event->accept();
+        return;
+    }
+    if (newSpan < 5000) newSpan = 5000;
+
+    // Anchor zoom on cursor X position within the chart area
+    double anchorFrac = 0.5;
+    if (m_chartRect.width() > 0) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        int mx = static_cast<int>(event->position().x());
+#else
+        int mx = event->x();
+#endif
+        anchorFrac = static_cast<double>(mx - m_chartRect.x()) / m_chartRect.width();
+        anchorFrac = qBound(0.0, anchorFrac, 1.0);
+    }
+
+    qint64 anchorMs = viewStart + static_cast<qint64>(anchorFrac * viewSpan);
+    qint64 newStart = anchorMs - static_cast<qint64>(anchorFrac * newSpan);
+    qint64 newEnd   = newStart + newSpan;
+
+    // Clamp to full range
+    if (newStart < fullStart) { newStart = fullStart; newEnd = newStart + newSpan; }
+    if (newEnd > fullEnd)     { newEnd = fullEnd; newStart = newEnd - newSpan; }
+    if (newStart < fullStart) newStart = fullStart;
+
+    m_viewStartMs = newStart;
+    m_viewEndMs   = newEnd;
+    rebuildData();
+    updateScrollBar();
+    update();
+    event->accept();
+}
+
+void UsageStatsWidget::updateScrollBar()
+{
+    if (m_viewStartMs <= 0 || m_allBuckets.isEmpty()) {
+        m_scrollBar->setVisible(false);
+        return;
+    }
+
+    qint64 fullStart = m_allBuckets.first().fromMs;
+    qint64 fullEnd   = m_allBuckets.last().toMs;
+    qint64 fullSpan  = fullEnd - fullStart;
+    qint64 viewSpan  = m_viewEndMs - m_viewStartMs;
+
+    if (viewSpan >= fullSpan || fullSpan <= 0) {
+        m_scrollBar->setVisible(false);
+        return;
+    }
+
+    m_scrollBar->setVisible(true);
+    m_scrollBar->blockSignals(true);
+    m_scrollBar->setRange(0, 1000);
+    m_scrollBar->setPageStep(static_cast<int>(1000.0 * viewSpan / fullSpan));
+
+    double frac = static_cast<double>(m_viewStartMs - fullStart) / (fullSpan - viewSpan);
+    m_scrollBar->setValue(static_cast<int>(frac * 1000));
+    m_scrollBar->blockSignals(false);
 }
 
 // ---------------------------------------------------------------------------
