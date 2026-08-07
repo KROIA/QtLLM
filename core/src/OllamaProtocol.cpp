@@ -107,6 +107,11 @@ void OllamaProtocol::clearStats()
     m_sessionTurnCount    = 0;
 }
 
+QJsonArray OllamaProtocol::conversationMessages() const
+{
+    return m_history;
+}
+
 QJsonObject OllamaProtocol::buildRequestBody() const
 {
     QJsonArray messages;

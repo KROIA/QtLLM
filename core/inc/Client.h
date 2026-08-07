@@ -76,6 +76,10 @@ public:
     // Results arrive via modelsAvailable().
     void fetchAvailableModels();
 
+    // Build a rich JSON export of the full conversation including raw messages
+    // (with tool_use / tool_result blocks), usage statistics, and per-turn timeline.
+    QJsonObject exportConversation() const;
+
 signals:
     // Emitted after all tool calls in a turn are resolved; text is the final LLM reply.
     void responseReady(const QString& text);
@@ -118,6 +122,7 @@ private:
     UsageHistory*                 m_usageHistory;
     QString                       m_currentModel;
     QString                       m_currentProvider;
+    QString                       m_systemPrompt;
 
 #if LOGGER_LIBRARY_AVAILABLE == 1
     Log::LogObject m_logger{Logger::getID(), "QtLLM::Client"};

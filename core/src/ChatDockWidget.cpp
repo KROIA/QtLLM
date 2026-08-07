@@ -4,6 +4,7 @@
 #include <QTextDocument>
 #include <QToolTip>
 #include <QRegularExpression>
+#include <QStyle>
 
 namespace QtLLM
 {
@@ -100,6 +101,17 @@ namespace QtLLM
         m_sendButton = new QPushButton("Send", m_centralWidget);
         buttonLayout->addWidget(m_sendButton);
 
+        m_saveButton = new QPushButton(m_centralWidget);
+        {
+            QIcon saveIcon(QStringLiteral(":/icons/floppy_disk.png"));
+            if (saveIcon.isNull())
+                saveIcon = style()->standardIcon(QStyle::SP_DialogSaveButton);
+            m_saveButton->setIcon(saveIcon);
+        }
+        m_saveButton->setFixedWidth(32);
+        m_saveButton->setToolTip(QString::fromUtf16(u"Konversation als JSON speichern"));
+        buttonLayout->addWidget(m_saveButton);
+
         m_settingsButton = new QPushButton(QString::fromUtf8("\xe2\x9a\x99"), m_centralWidget);
         m_settingsButton->setFixedWidth(32);
         m_settingsButton->setToolTip("Settings");
@@ -120,6 +132,7 @@ namespace QtLLM
 
         connect(m_sendButton, &QPushButton::clicked, this, &ChatDockWidget::onSendClicked);
         connect(m_cancelButton, &QPushButton::clicked, this, &ChatDockWidget::onCancelClicked);
+        connect(m_saveButton, &QPushButton::clicked, this, &ChatDockWidget::saveConversationRequested);
         connect(m_settingsButton, &QPushButton::clicked, this, &ChatDockWidget::settingsRequested);
         connect(&m_cancelTimer, &QTimer::timeout, this, &ChatDockWidget::onCancelTimerTimeout);
 

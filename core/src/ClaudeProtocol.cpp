@@ -128,6 +128,11 @@ void ClaudeProtocol::clearStats()
     m_sessionCostUsd                  = 0.0;
 }
 
+QJsonArray ClaudeProtocol::conversationMessages() const
+{
+    return m_history;
+}
+
 QJsonObject ClaudeProtocol::buildRequestBody() const
 {
     QJsonObject body;

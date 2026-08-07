@@ -5,11 +5,16 @@
 #include <QLabel>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QTimer>
 #include <QToolBar>
+#include <QFileDialog>
+#include <QFile>
+#include <QFileInfo>
+#include <QDateTime>
 
 static const char* kDefaultSystemPrompt =
     "You are a old grumpy assistant embedded in a Qt desktop application."
@@ -183,6 +188,23 @@ void ChatWindow::connectSignals()
     connect(m_chatDock, &QtLLM::ChatDockWidget::messageSent,    this, &ChatWindow::onSendClicked);
     connect(m_chatDock, &QtLLM::ChatDockWidget::cancelRequested, this, [this]() {
         m_chatDock->setLoading(false);
+    });
+    connect(m_chatDock, &QtLLM::ChatDockWidget::saveConversationRequested, this, [this]() {
+        QString defaultName = QString("conversation_%1.json")
+            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+        QString path = QFileDialog::getSaveFileName(
+            this, QString::fromUtf16(u"Konversation speichern"), defaultName, "JSON (*.json)");
+        if (path.isEmpty())
+            return;
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            m_chatDock->setStatusText(QString::fromUtf16(u"Fehler beim Speichern: %1").arg(file.errorString()));
+            return;
+        }
+        QJsonDocument doc(m_client.exportConversation());
+        file.write(doc.toJson(QJsonDocument::Indented));
+        file.close();
+        m_chatDock->setStatusText(QString::fromUtf16(u"Konversation gespeichert: %1").arg(QFileInfo(path).fileName()));
     });
     connect(m_chatDock, &QtLLM::ChatDockWidget::settingsRequested, this, [this]() {
         QtLLM::SettingsDialog dlg(this);

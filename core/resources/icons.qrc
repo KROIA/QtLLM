@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
         <file>icons/accept.png</file>
+        <file>icons/floppy_disk.png</file>
     </qresource>
 </RCC>

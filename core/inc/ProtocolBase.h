@@ -37,6 +37,9 @@ public:
     // Reset accumulated session statistics (called by Client::clearConversation).
     virtual void clearStats() = 0;
 
+    // Return the raw internal message history (including tool_use / tool_result blocks).
+    virtual QJsonArray conversationMessages() const = 0;
+
     // Fetch the list of available models from the provider asynchronously.
     virtual void fetchModels() = 0;
 

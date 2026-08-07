@@ -46,6 +46,7 @@ namespace QtLLM
         void messageSent(const QString& message);
         void cancelRequested();
         void settingsRequested();
+        void saveConversationRequested();
 
     private slots:
         void onSendClicked();
@@ -67,6 +68,7 @@ namespace QtLLM
         QTextEdit* m_inputField = nullptr;
         QPushButton* m_sendButton = nullptr;
         QPushButton* m_cancelButton = nullptr;
+        QPushButton* m_saveButton = nullptr;
         QPushButton* m_settingsButton = nullptr;
         QLabel* m_loadingLabel = nullptr;
         QLabel* m_statusLabel = nullptr;

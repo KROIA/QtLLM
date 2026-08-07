@@ -92,7 +92,7 @@ void Client::onProtocolError(const QString& errorMessage)
 
 void Client::setModel(const QString& model)       { m_currentModel = model; m_protocol->setModel(model); }
 void Client::setMaxTokens(int maxTokens)           { m_protocol->setMaxTokens(maxTokens); }
-void Client::setSystemPrompt(const QString& p)     { m_protocol->setSystemPrompt(p); }
+void Client::setSystemPrompt(const QString& p)     { m_systemPrompt = p; m_protocol->setSystemPrompt(p); }
 
 void Client::registerTool(const Tool& tool, ToolHandler handler)
 {
@@ -256,6 +256,58 @@ void Client::recordSample(const UsageStats& stats)
     }
 
     m_usageHistory->append(sample);
+}
+
+QJsonObject Client::exportConversation() const
+{
+    QJsonObject root;
+    root["schemaVersion"] = 1;
+
+    QDateTime now = QDateTime::currentDateTime();
+    root["exportedAt"]        = now.toString(Qt::ISODateWithMs);
+    root["exportedAtEpochMs"] = QDateTime::currentMSecsSinceEpoch();
+    root["provider"]          = m_currentProvider;
+    root["model"]             = m_currentModel;
+    root["systemPrompt"]      = m_systemPrompt;
+
+    // Full raw message history from the protocol (includes tool_use / tool_result blocks)
+    root["messages"] = m_protocol->conversationMessages();
+
+    // Session-level usage statistics
+    QJsonObject usage;
+    usage["sessionInputTokens"]              = m_lastStats.sessionInputTokens;
+    usage["sessionOutputTokens"]             = m_lastStats.sessionOutputTokens;
+    usage["sessionCacheReadInputTokens"]     = m_lastStats.sessionCacheReadInputTokens;
+    usage["sessionCacheCreationInputTokens"] = m_lastStats.sessionCacheCreationInputTokens;
+    usage["sessionToolCalls"]                = m_lastStats.sessionToolCalls;
+    usage["sessionTurnCount"]                = m_lastStats.sessionTurnCount;
+    usage["sessionCostUsd"]                  = m_lastStats.sessionCostUsd;
+    root["usage"] = usage;
+
+    // Per-turn timeline for this process session
+    QJsonArray turns;
+    qint64 sessionStart = m_usageHistory->sessionStartMs();
+    for (const UsageSample& s : m_usageHistory->samples()) {
+        if (s.timestampMsEpoch < sessionStart)
+            continue;
+        QJsonObject turn;
+        turn["timestamp"]                = QDateTime::fromMSecsSinceEpoch(s.timestampMsEpoch).toString(Qt::ISODateWithMs);
+        turn["epochMs"]                  = s.timestampMsEpoch;
+        turn["model"]                    = s.model;
+        turn["provider"]                 = s.provider;
+        turn["app"]                      = s.app;
+        turn["inputTokens"]              = s.inputTokens;
+        turn["outputTokens"]             = s.outputTokens;
+        turn["cacheReadInputTokens"]     = s.cacheReadInputTokens;
+        turn["cacheCreationInputTokens"] = s.cacheCreationInputTokens;
+        turn["toolCalls"]                = s.toolCalls;
+        turn["durationMs"]               = s.durationMs;
+        turn["costUsd"]                  = s.costUsd;
+        turns.append(turn);
+    }
+    root["turns"] = turns;
+
+    return root;
 }
 
 } // namespace QtLLM

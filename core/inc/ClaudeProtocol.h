@@ -36,6 +36,7 @@ public:
     void clearHistory() override;
     void clearStats() override;
     void fetchModels() override;
+    QJsonArray conversationMessages() const override;
 
 private slots:
     void onReplyReceived(const QByteArray& data);
