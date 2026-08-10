@@ -1,5 +1,6 @@
 #include "ClaudeProtocol.h"
 #include "Tool.h"
+#include "Pricing.h"
 
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -251,10 +252,9 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         m_sessionToolCalls                += m_turnToolCalls;
         ++m_sessionTurnCount;
 
-        auto [inPrice, outPrice] = modelPricing();
-        double turnCost = (m_turnInputTokens  / 1'000'000.0) * inPrice
-                        + (m_turnOutputTokens / 1'000'000.0) * outPrice;
-        m_sessionCostUsd += turnCost;
+        m_sessionCostUsd += PricingRegistry::instance().estimateCostUsd(
+            m_model, m_turnInputTokens, m_turnOutputTokens,
+            m_turnCacheReadInputTokens, m_turnCacheCreationInputTokens);
 
         qDebug() << "ClaudeProtocol turn stats:"
                  << "in=" << m_turnInputTokens
@@ -312,10 +312,9 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
             m_sessionToolCalls                += m_turnToolCalls;
             ++m_sessionTurnCount;
 
-            auto [inPrice, outPrice] = modelPricing();
-            double turnCost = (m_turnInputTokens  / 1'000'000.0) * inPrice
-                            + (m_turnOutputTokens / 1'000'000.0) * outPrice;
-            m_sessionCostUsd += turnCost;
+            m_sessionCostUsd += PricingRegistry::instance().estimateCostUsd(
+                m_model, m_turnInputTokens, m_turnOutputTokens,
+                m_turnCacheReadInputTokens, m_turnCacheCreationInputTokens);
 
             qDebug() << "ClaudeProtocol turn stats (cap hit):"
                      << "in=" << m_turnInputTokens
@@ -417,19 +416,6 @@ QString ClaudeProtocol::assembleText(const QJsonArray& content) const
         }
     }
     return assembled;
-}
-
-QPair<double, double> ClaudeProtocol::modelPricing() const
-{
-    // Prices in USD per 1M tokens {input, output}. Approximate as of mid-2025.
-    const QString m = m_model.toLower();
-    if (m.contains("opus-4"))    return {15.0,  75.0};
-    if (m.contains("sonnet-4"))  return { 3.0,  15.0};
-    if (m.contains("haiku-4"))   return { 0.80,  4.0};
-    if (m.contains("opus-3"))    return {15.0,  75.0};
-    if (m.contains("sonnet-3"))  return { 3.0,  15.0};
-    if (m.contains("haiku-3"))   return { 0.25,  1.25};
-    return {0.0, 0.0};
 }
 
 void ClaudeProtocol::onTransportError(const QString& message)

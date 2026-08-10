@@ -52,8 +52,6 @@ private:
     void        processResponse(const QJsonObject& responseJson);
     void        executeToolCalls(const QJsonArray& toolUseBlocks);
     QString     assembleText(const QJsonArray& content) const;
-    // Returns per-million-token cost {inputUsd, outputUsd} for the current model; 0 if unknown.
-    QPair<double, double> modelPricing() const;
 
     QString                    m_apiKey;
     QUrl                       m_url;

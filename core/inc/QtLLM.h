@@ -15,6 +15,7 @@
 /// USER_SECTION_START 2
 
 #include "UsageStats.h"
+#include "Pricing.h"
 #include "Tool.h"
 #include "ToolResult.h"
 #include "Client.h"

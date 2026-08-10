@@ -6,7 +6,7 @@ All public types live in the `QtLLM` namespace. Include the umbrella header:
 #include <QtLLM.h>
 ```
 
-Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
+Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
 
 ---
 
@@ -350,18 +350,63 @@ struct UsageStats {
 
 ### Cost estimation (Claude only)
 
-Cost is estimated from the model name at runtime using approximate mid-2025 pricing:
+Cost is resolved through the [`PricingRegistry`](#qtllmpricingregistry) across all token categories (input, output, cache read ≈ 10 % of input, cache write ≈ 125 %). Without any configuration a hard-coded approximate table (mid-2025) is used; call `PricingRegistry::instance().fetchOnlinePricing()` at startup or inject your own prices for accurate numbers. It is always an estimate — Anthropic has no billing/pricing API; verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
 
-| Model family | Input (per 1M) | Output (per 1M) |
-|---|---|---|
-| claude-opus-4 | $15.00 | $75.00 |
-| claude-sonnet-4 | $3.00 | $15.00 |
-| claude-haiku-4 | $0.80 | $4.00 |
-| claude-opus-3 | $15.00 | $75.00 |
-| claude-sonnet-3 | $3.00 | $15.00 |
-| claude-haiku-3 | $0.25 | $1.25 |
+---
 
-Prices are hard-coded approximations. Always verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
+## `QtLLM::PricingRegistry`
+
+Process-wide model-price registry (singleton) behind all cost estimation. Every layer is optional — without configuration the behaviour equals the old hard-coded table.
+
+Resolution order for `pricingFor(model)`:
+
+1. **Custom resolver** (`setResolver`) — any app-defined source; return an invalid `ModelPricing` to fall through
+2. **Injected entries** (`setPricing`) — per model or substring pattern
+3. **Loaded table** (`loadLiteLlmJson` / `fetchOnlinePricing`) — LiteLLM community JSON
+4. **Built-in fallback** — hard-coded approximations
+
+```cpp
+struct ModelPricing {
+    double inputPerMTok      = 0.0;   // USD per 1M tokens
+    double outputPerMTok     = 0.0;
+    double cacheReadPerMTok  = -1.0;  // -1 = derive: 10% of input
+    double cacheWritePerMTok = -1.0;  // -1 = derive: 125% of input
+    bool   isValid() const;           // any price > 0
+};
+
+using PricingResolver = std::function<ModelPricing(const QString& model)>;
+```
+
+| Method | Description |
+|---|---|
+| `static instance()` | The singleton |
+| `pricingFor(QString model)` | Resolved pricing; model ids are matched case-insensitively, provider prefixes (`anthropic/`) stripped, substring both directions (date-suffixed keys match short ids) |
+| `estimateCostUsd(model, in, out, cacheRead = 0, cacheWrite = 0)` | USD estimate across all categories |
+| `setPricing(QString pattern, ModelPricing)` | Inject/override one model's prices |
+| `setResolver(PricingResolver)` | Install a custom first-priority source; `nullptr` removes |
+| `clearCustomPricing()` | Drop injected + loaded entries (built-in fallback stays) |
+| `loadLiteLlmJson(QJsonObject)` | Load a LiteLLM-format object (`input_cost_per_token` per single token); also usable for own files in that format. Returns models loaded |
+| `fetchOnlinePricing(url = defaultLiteLlmUrl(), maxCacheAgeDays = 7)` | Async fetch of the LiteLLM community JSON. Disk cache is loaded immediately; network hit only when the cache is missing/stale. Failure keeps previous data |
+| `static defaultLiteLlmUrl()` | `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` |
+| `cacheFilePath()` | On-disk cache location (`GenericDataLocation/QtLLM/litellm_pricing.json`) |
+
+| Signal | When emitted |
+|---|---|
+| `pricingUpdated(int modelCount, QString source)` | Table changed; source is `"cache"`, `"network"`, `"json"` or `"manual"` |
+| `fetchFailed(QString error)` | Online fetch failed — previous/fallback data stays active |
+
+```cpp
+// Typical startup:
+QtLLM::PricingRegistry::instance().fetchOnlinePricing();
+
+// Own prices (e.g. negotiated rates or an internal source):
+QtLLM::PricingRegistry::instance().setPricing("claude-sonnet-4", {3.0, 15.0});
+QtLLM::PricingRegistry::instance().setResolver([](const QString& model) {
+    return myBackend.priceFor(model);   // invalid result -> next layer
+});
+```
+
+> The LiteLLM JSON is community-maintained (not Anthropic-official) but the de-facto standard and usually updated within days of price changes.
 
 ---
 

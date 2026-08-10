@@ -3,6 +3,7 @@
 #include "OllamaProtocol.h"
 #include "ToolResult.h"
 #include "UsageSample.h"
+#include "Pricing.h"
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QDateTime>
@@ -356,24 +357,14 @@ void Client::recordSample(const UsageStats& stats)
     sample.toolCalls                = stats.toolCalls;
     sample.durationMs               = stats.durationMs;
 
-    // Est. per-turn cost reflecting prompt-caching pricing.
-    // Cache reads cost ~10% of input price; cache writes cost ~125% (5-min ephemeral premium).
+    // Est. per-turn cost across all token categories, resolved through the
+    // PricingRegistry (custom resolver / injected / fetched / built-in).
     // Ollama stays 0.
     sample.costUsd = 0.0;
     if (m_currentProvider == "claude") {
-        double inPrice = 0, outPrice = 0;
-        const QString m = m_currentModel.toLower();
-        if      (m.contains("opus-4"))   { inPrice = 15.0;  outPrice = 75.0; }
-        else if (m.contains("sonnet-4")) { inPrice = 3.0;   outPrice = 15.0; }
-        else if (m.contains("haiku-4"))  { inPrice = 0.80;  outPrice = 4.0;  }
-        else if (m.contains("opus-3"))   { inPrice = 15.0;  outPrice = 75.0; }
-        else if (m.contains("sonnet-3")) { inPrice = 3.0;   outPrice = 15.0; }
-        else if (m.contains("haiku-3"))  { inPrice = 0.25;  outPrice = 1.25; }
-        sample.costUsd = (stats.inputTokens              * inPrice
-                        + stats.cacheReadInputTokens     * 0.1  * inPrice
-                        + stats.cacheCreationInputTokens * 1.25 * inPrice)
-                         / 1'000'000.0
-                       + (stats.outputTokens * outPrice) / 1'000'000.0;
+        sample.costUsd = PricingRegistry::instance().estimateCostUsd(
+            m_currentModel, stats.inputTokens, stats.outputTokens,
+            stats.cacheReadInputTokens, stats.cacheCreationInputTokens);
     }
 
     m_usageHistory->append(sample);

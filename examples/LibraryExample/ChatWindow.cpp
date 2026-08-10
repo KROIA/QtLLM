@@ -45,6 +45,10 @@ ChatWindow::ChatWindow(const QString& apiKey,
     m_systemPrompt = kDefaultSystemPrompt;
     m_client.setMaxTokens(1024);
     m_client.setSystemPrompt(m_systemPrompt);
+
+    // Refresh model prices from the LiteLLM community JSON (disk-cached,
+    // network only when the cache is older than a week).
+    QtLLM::PricingRegistry::instance().fetchOnlinePricing();
 }
 
 ChatWindow::ChatWindow(QtLLM::Provider provider,
