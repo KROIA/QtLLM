@@ -1,6 +1,7 @@
 #include "Client.h"
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
+#include "ToolResult.h"
 #include "UsageSample.h"
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -103,6 +104,7 @@ void Client::registerTool(const Tool& tool, ToolHandler handler)
     rt.claudeSchema = tool.toApiObject();
     rt.openAiSchema = tool.toOpenAiApiObject();
     rt.handler      = std::move(handler);
+    rt.tool         = tool;
     m_tools[tool.name()] = rt;
     syncToolsToProtocol();
 }
@@ -131,8 +133,78 @@ void Client::registerTool(const QString& name,
     rt.claudeSchema = claudeSchema;
     rt.openAiSchema = openAiSchema;
     rt.handler      = std::move(handler);
+    rt.tool         = Tool().setName(name).setDescription(description);
     m_tools[name]   = rt;
     syncToolsToProtocol();
+}
+
+void Client::setToolEnabled(const QString& toolName, bool enabled)
+{
+    auto it = m_tools.find(toolName);
+    if (it == m_tools.end() || it.value().enabled == enabled)
+        return;
+    it.value().enabled = enabled;
+#if LOGGER_LIBRARY_AVAILABLE == 1
+    m_logger.logDebug(std::string(enabled ? "Enable" : "Disable")
+                      + " tool: " + toolName.toStdString());
+#endif
+    // Mandatory: keep the advertised schema list and the handler map in sync,
+    // otherwise the protocol reports "No handler registered for tool".
+    syncToolsToProtocol();
+}
+
+bool Client::isToolEnabled(const QString& toolName) const
+{
+    auto it = m_tools.constFind(toolName);
+    return it != m_tools.cend() && it.value().enabled;
+}
+
+QStringList Client::toolNames() const
+{
+    return m_tools.keys();
+}
+
+QStringList Client::enabledToolNames() const
+{
+    QStringList names;
+    for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+        if (it.value().enabled)
+            names.append(it.key());
+    }
+    return names;
+}
+
+QList<Tool> Client::registeredTools() const
+{
+    QList<Tool> tools;
+    for (const RegisteredTool& rt : m_tools)
+        tools.append(rt.tool);
+    return tools;
+}
+
+void Client::setValidateToolInput(bool enabled)
+{
+    m_validateToolInput = enabled;
+}
+
+bool Client::validateToolInput() const
+{
+    return m_validateToolInput;
+}
+
+void Client::setMaxToolCallsPerTurn(int maxCalls)
+{
+    m_maxToolCallsPerTurn = maxCalls;
+}
+
+int Client::maxToolCallsPerTurn() const
+{
+    return m_maxToolCallsPerTurn;
+}
+
+void Client::setToolConsentHandler(ToolConsentHandler handler)
+{
+    m_consentHandler = std::move(handler);
 }
 
 void Client::unregisterTool(const QString& toolName)
@@ -152,10 +224,53 @@ void Client::syncToolsToProtocol()
     QMap<QString, ToolHandler> handlers;
 
     for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+        if (!it.value().enabled) {
+            // Not advertised, but still answerable: the model may call it from
+            // a stale/cached tool list. "disabled" guides better than "unknown".
+            handlers.insert(it.key(), [](const QJsonObject&) {
+                return toolError(QStringLiteral("tool is disabled"));
+            });
+            continue;
+        }
         schemas.append(isOllama ? it.value().openAiSchema : it.value().claudeSchema);
-        handlers.insert(it.key(), it.value().handler);
+        handlers.insert(it.key(), wrapHandler(it.key(), it.value()));
     }
     m_protocol->setTools(schemas, handlers);
+}
+
+// Single choke point in front of every tool execution:
+// call cap -> input validation -> consent -> registered handler.
+// All checks are opt-in; with defaults this forwards to the handler unchanged.
+ToolHandler Client::wrapHandler(const QString& toolName, const RegisteredTool& rt)
+{
+    ToolHandler inner = rt.handler;
+    QJsonObject parameterSchema = rt.claudeSchema["input_schema"].toObject();
+
+    return [this, toolName, inner, parameterSchema](const QJsonObject& input) -> QJsonObject {
+        if (m_maxToolCallsPerTurn > 0 && m_toolCallsThisTurn >= m_maxToolCallsPerTurn) {
+            if (!m_limitSignalEmitted) {
+                m_limitSignalEmitted = true;
+                emit toolCallLimitReached(m_maxToolCallsPerTurn);
+            }
+            return toolError(QStringLiteral("tool call limit reached"));
+        }
+
+        if (m_validateToolInput) {
+            QJsonObject error = Tool::validateAgainstSchema(parameterSchema, input);
+            if (!error.isEmpty())
+                return error;
+        }
+
+        if (m_consentHandler && !m_consentHandler(toolName, input)) {
+#if LOGGER_LIBRARY_AVAILABLE == 1
+            m_logger.logInfo("Tool declined by consent handler: " + toolName.toStdString());
+#endif
+            return toolError(QStringLiteral("user declined"));
+        }
+
+        ++m_toolCallsThisTurn;
+        return inner(input);
+    };
 }
 
 void Client::sendPrompt(const QString& userMessage)
@@ -168,6 +283,8 @@ void Client::sendPrompt(const QString& userMessage)
     msg["role"]    = "user";
     msg["content"] = userMessage;
     m_history.append(msg);
+    m_toolCallsThisTurn = 0;
+    m_limitSignalEmitted = false;
     m_protocol->beginTurn(userMessage);
 }
 
@@ -189,6 +306,8 @@ void Client::sendToolMessage(const QString& toolName, const QJsonObject& input)
     QString payload = QString::fromUtf8(
         QJsonDocument(input).toJson(QJsonDocument::Compact));
     QString notification = QString("[%1 completed] %2").arg(toolName, payload);
+    m_toolCallsThisTurn = 0;
+    m_limitSignalEmitted = false;
     m_protocol->beginTurn(notification);
 }
 
@@ -198,6 +317,8 @@ void Client::clearConversation()
     m_protocol->clearHistory();
     m_protocol->clearStats();
     m_lastStats = UsageStats{};
+    m_toolCallsThisTurn = 0;
+    m_limitSignalEmitted = false;
 }
 
 QJsonArray Client::conversationHistory() const

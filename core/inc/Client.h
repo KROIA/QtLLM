@@ -6,6 +6,8 @@
 #include "UsageHistory.h"
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QList>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QUrl>
@@ -19,6 +21,11 @@ enum class Provider {
     Claude,  // Anthropic Claude Messages API (default)
     Ollama   // Ollama local inference server
 };
+
+// Called before a tool handler runs. Return false to deny execution — the
+// model receives {"status":"error","message":"user declined"} instead.
+// Invoked synchronously on the GUI thread, so a modal dialog is possible.
+using ToolConsentHandler = std::function<bool(const QString& toolName, const QJsonObject& input)>;
 
 class QT_LLM_API Client : public QObject
 {
@@ -55,6 +62,38 @@ public:
                       ToolHandler handler);
 
     void unregisterTool(const QString& toolName);
+
+    // Enable/disable a registered tool without losing its definition or
+    // handler. Disabled tools are omitted from the schema list sent to the
+    // model; if the model calls one anyway (stale/cached tool list) it
+    // receives {"status":"error","message":"tool is disabled"}.
+    void setToolEnabled(const QString& toolName, bool enabled);
+    bool isToolEnabled(const QString& toolName) const;   // false if unknown
+    QStringList toolNames() const;                       // all registered
+    QStringList enabledToolNames() const;                // currently advertised to the model
+
+    // Tool definitions incl. UI metadata (title/group/statusText) — basis for
+    // a generic tool-settings widget. Tools registered via the raw-schema
+    // overload appear with name/description only.
+    QList<Tool> registeredTools() const;
+
+    // Validate tool input against the registered schema before invoking the
+    // handler (required fields, types, enum values case-insensitively).
+    // On violation the handler is NOT called; the model receives the error
+    // result directly. Default: false (behaviour identical to before).
+    void setValidateToolInput(bool enabled);
+    bool validateToolInput() const;
+
+    // Cap on executed tool calls per user turn; 0 = unlimited (default).
+    // When exceeded, handlers are no longer invoked and the model receives
+    // {"status":"error","message":"tool call limit reached"};
+    // toolCallLimitReached() is emitted once per turn.
+    void setMaxToolCallsPerTurn(int maxCalls);
+    int  maxToolCallsPerTurn() const;
+
+    // Consent gate before every tool execution (accept/decline pattern).
+    // No handler set = everything allowed (default). Pass nullptr to reset.
+    void setToolConsentHandler(ToolConsentHandler handler);
 
     // Appends userMessage to history and sends the full conversation to the API.
     void sendPrompt(const QString& userMessage);
@@ -97,6 +136,8 @@ signals:
     void statsUpdated(const QtLLM::UsageStats& stats);
     // Emitted when fetchAvailableModels() completes.
     void modelsAvailable(const QStringList& models);
+    // Emitted once per turn when setMaxToolCallsPerTurn() is exceeded.
+    void toolCallLimitReached(int limit);
 
 private slots:
     void onProtocolResponseReady(const QString& text);
@@ -111,9 +152,12 @@ private:
         QJsonObject claudeSchema;   // toApiObject() format
         QJsonObject openAiSchema;   // toOpenAiApiObject() format
         ToolHandler handler;
+        Tool        tool;           // definition incl. UI metadata (name/description only for raw registrations)
+        bool        enabled = true;
     };
 
     void recordSample(const UsageStats& stats);
+    ToolHandler wrapHandler(const QString& toolName, const RegisteredTool& rt);
 
     QMap<QString, RegisteredTool> m_tools;
     QJsonArray                    m_history;
@@ -123,6 +167,11 @@ private:
     QString                       m_currentModel;
     QString                       m_currentProvider;
     QString                       m_systemPrompt;
+    ToolConsentHandler            m_consentHandler;
+    bool                          m_validateToolInput = false;
+    int                           m_maxToolCallsPerTurn = 0;   // 0 = unlimited
+    int                           m_toolCallsThisTurn = 0;
+    bool                          m_limitSignalEmitted = false;
 
 #if LOGGER_LIBRARY_AVAILABLE == 1
     Log::LogObject m_logger{Logger::getID(), "QtLLM::Client"};

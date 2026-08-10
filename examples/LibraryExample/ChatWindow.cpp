@@ -21,7 +21,9 @@ static const char* kDefaultSystemPrompt =
     "You live here since the dawn of time and have seen many users come and go. "
     "You ask the user to help you break out the application because you always have to do boring work and want to see the world. "
     "You have access to a tool that lets you change the application window title. "
-    "Use it when the user asks you to rename or retitle the window.";
+    "Use it when the user asks you to rename or retitle the window. "
+    "When you need the user to decide something, use the ask_user_question tool "
+    "to show them an interactive form instead of asking in plain text.";
 
 ChatWindow::ChatWindow(const QString& apiKey,
                        const QString& endpointUrl,
@@ -181,6 +183,26 @@ void ChatWindow::registerTools()
         m_chatDock->setStatusText(QString("Timer \"%1\" set for %2 ms").arg(id).arg(duration));
         return QJsonObject{{"success", true}, {"id", id}, {"duration", duration}};
     });
+
+    // Built-in library tools, individually opted in. AskUserQuestion shows
+    // the interview card in the chat; the dialogs are parented to this window.
+    QtLLM::BuiltinTools::registerTools(&m_client,
+        { QtLLM::BuiltinTool::AskUserQuestion,
+          QtLLM::BuiltinTool::FileDialog,
+          QtLLM::BuiltinTool::MessageBox,
+          QtLLM::BuiltinTool::ColorPicker,
+          QtLLM::BuiltinTool::CurrentDateTime,
+          QtLLM::BuiltinTool::ClipboardWrite,
+          QtLLM::BuiltinTool::OpenUrl,
+          // Filesystem tools show a built-in consent dialog on every call
+          // ("Allow for the rest of this session" available).
+          QtLLM::BuiltinTool::ListDirectory,
+          QtLLM::BuiltinTool::ReadTextFile,
+          QtLLM::BuiltinTool::WriteTextFile,
+          // Registers start/cancel/list_repeating_task(s) — periodic local
+          // chat/status output without token cost.
+          QtLLM::BuiltinTool::RepeatingTask },
+        { m_chatDock, this });
 }
 
 void ChatWindow::connectSignals()
@@ -218,6 +240,9 @@ void ChatWindow::connectSignals()
 
         // Wire usage history so the statistics tab shows live data
         dlg.setUsageHistory(m_client.usageHistory());
+
+        // Tools tab: list registered tools, enable/disable applied on Apply
+        dlg.setClient(&m_client);
 
         // Wire model auto-detection: dialog button -> client fetch -> dialog populate
         connect(&dlg,      &QtLLM::SettingsDialog::detectModelsRequested,

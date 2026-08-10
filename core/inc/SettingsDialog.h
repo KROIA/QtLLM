@@ -10,9 +10,15 @@
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QPushButton>
+#include <QPointer>
+#include <QMap>
+
+class QCheckBox;
+class QVBoxLayout;
 
 namespace QtLLM
 {
+    class Client;
     class UsageHistory;
     class UsageStatsWidget;
 
@@ -49,6 +55,11 @@ namespace QtLLM
         // Connect the usage statistics panel to a live UsageHistory.
         void setUsageHistory(UsageHistory* history);
 
+        // Bind a Client: the "Tools" tab then lists every registered tool
+        // (grouped, with description) and lets the user enable/disable them.
+        // Toggles are applied in one batch when Apply is clicked.
+        void setClient(Client* client);
+
         // Populate the model combo with available models (preserves current text).
         void setAvailableModels(const QStringList& models);
 
@@ -61,9 +72,14 @@ namespace QtLLM
         void onProviderChanged(int index);
         void onApply();
 
+    protected:
+        void showEvent(QShowEvent* event) override;
+
     private:
         void setupUI();
         void updateFieldVisibility();
+        void refreshToolsTab();
+        void applyToolToggles();
 
         QComboBox*   m_providerCombo = nullptr;
         QLineEdit*   m_apiKeyEdit = nullptr;
@@ -82,5 +98,10 @@ namespace QtLLM
 
         QTabWidget*       m_tabWidget = nullptr;
         UsageStatsWidget* m_statsWidget = nullptr;
+
+        QPointer<Client>          m_client;
+        QWidget*                  m_toolsPage = nullptr;
+        QVBoxLayout*              m_toolsLayout = nullptr;
+        QMap<QString, QCheckBox*> m_toolChecks;   // tool name -> checkbox
     };
 }

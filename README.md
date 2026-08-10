@@ -17,8 +17,11 @@ Tool/function calling, streaming-free async design, and a Qt-idiomatic signals-a
 - Single header include (`#include <QtLLM.h>`)
 - Async via Qt signals — never blocks the UI thread
 - Tool/function calling with automatic multi-turn loop handling
+- Built-in tools, individually opt-in (`BuiltinTools`): user interview forms in the chat, file dialogs, message boxes, color picker, clipboard, date/time, filesystem access (consent-gated), repeating tasks, and more
+- Tool safety rails: input validation, per-turn call cap, consent hook, enable/disable without re-registration
+- Ready-made widgets: chat dock (Markdown bubbles, inline interview cards, color swatches), settings dialog with tool manager and usage charts
 - Supports Claude (cloud) and Ollama (local) — switchable at construction time
-- Usage statistics and cost estimation per turn
+- Usage statistics, persistent usage history, and cost estimation per turn
 - Ollama: auto-start server, model discovery, and one-click model downloads
 - Builds as shared and static library
 - Qt5 only — no extra dependencies beyond OpenSSL 1.1.x

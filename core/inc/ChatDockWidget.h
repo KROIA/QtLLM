@@ -8,10 +8,12 @@
 #include <QScrollArea>
 #include <QLabel>
 #include <QTimer>
+#include <QJsonObject>
 
 namespace QtLLM
 {
     class Client;
+    class InterviewWidget;
 
     class QT_LLM_API ChatDockWidget : public QDockWidget
     {
@@ -22,6 +24,18 @@ namespace QtLLM
 
         void addUserMessage(const QString& message);
         void addAssistantMessage(const QString& message);
+
+        // Insert an interactive interview card into the conversation
+        // (non-blocking). See InterviewWidget for the request format.
+        // Emits interviewFinished() when the user submits or skips.
+        InterviewWidget* addInterviewWidget(const QJsonObject& request);
+
+        // Blocking convenience for tool handlers: inserts the card and spins
+        // a local event loop (like QDialog::exec) until the user submits or
+        // skips. Returns the interview result; {"status":"cancelled"} if the
+        // widget is destroyed while waiting. GUI thread only.
+        QJsonObject execInterview(const QJsonObject& request);
+
         void setLoading(bool loading);
         void setStatusText(const QString& text);
         void clearStatus();
@@ -55,6 +69,8 @@ namespace QtLLM
         void cancelRequested();
         void settingsRequested();
         void saveConversationRequested();
+        // Result of an interview card added via addInterviewWidget()/execInterview().
+        void interviewFinished(const QJsonObject& result);
 
     private slots:
         void onSendClicked();
@@ -80,6 +96,7 @@ namespace QtLLM
         QPushButton* m_saveButton = nullptr;
         QPushButton* m_settingsButton = nullptr;
         Client* m_client = nullptr;  // optional conversation source for built-in Save
+        QMetaObject::Connection m_toolStatusConn;  // auto statusText on toolInvoked
         QLabel* m_loadingLabel = nullptr;
         QLabel* m_statusLabel = nullptr;
         QLabel* m_tokenLabel = nullptr;

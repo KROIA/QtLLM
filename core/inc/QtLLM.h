@@ -16,9 +16,13 @@
 
 #include "UsageStats.h"
 #include "Tool.h"
+#include "ToolResult.h"
 #include "Client.h"
 #include "OllamaManager.h"
 #include "ChatDockWidget.h"
+#include "InterviewWidget.h"
+#include "InterviewTool.h"
+#include "BuiltinTools.h"
 #include "SettingsDialog.h"
 
 /// USER_SECTION_END

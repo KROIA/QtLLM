@@ -1,6 +1,9 @@
 #include "ChatDockWidget.h"
+#include "InterviewWidget.h"
 #include <QScrollBar>
 #include <QKeyEvent>
+#include <QEventLoop>
+#include <QPointer>
 #include <QTextDocument>
 #include <QToolTip>
 #include <QRegularExpression>
@@ -195,6 +198,46 @@ namespace QtLLM
         scrollToBottom();
     }
 
+    InterviewWidget* ChatDockWidget::addInterviewWidget(const QJsonObject& request)
+    {
+        InterviewWidget* card = new InterviewWidget(request);
+        // Marker so bubble-width/font loops leave the card's internal labels alone
+        card->setProperty("qtllm_interview", true);
+        connect(card, &InterviewWidget::finished,
+                this, &ChatDockWidget::interviewFinished);
+        m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, card);
+        m_autoScroll = true;  // a question demands attention — always reveal it
+        scrollToBottom();
+        return card;
+    }
+
+    QJsonObject ChatDockWidget::execInterview(const QJsonObject& request)
+    {
+        QPointer<InterviewWidget> card(addInterviewWidget(request));
+
+        // "Thinking..." would be misleading while we wait on the user.
+        const bool loadingWasVisible = m_loadingLabel->isVisible();
+        m_loadingLabel->setVisible(false);
+
+        QJsonObject result{{"status", "cancelled"}};
+        QEventLoop loop;
+        connect(card, &InterviewWidget::finished, &loop,
+                [&result, &loop](const QJsonObject& r) {
+                    result = r;
+                    loop.quit();
+                });
+        connect(card, &QObject::destroyed, &loop, &QEventLoop::quit);
+
+        // The dock itself may be torn down while the loop spins (app shutdown);
+        // guard against touching members through a dangling this afterwards.
+        QPointer<ChatDockWidget> self(this);
+        loop.exec();
+
+        if (self)
+            m_loadingLabel->setVisible(loadingWasVisible);
+        return result;
+    }
+
     void ChatDockWidget::setLoading(bool loading)
     {
         m_isLoading = loading;
@@ -228,6 +271,8 @@ namespace QtLLM
             QLayoutItem* item = m_messagesLayout->itemAt(i);
             if (!item || !item->widget())
                 continue;
+            if (item->widget()->property("qtllm_interview").toBool())
+                continue;  // interview cards manage their own labels
             QLabel* label = item->widget()->findChild<QLabel*>();
             if (label) {
                 QFont f = label->font();
@@ -287,7 +332,24 @@ namespace QtLLM
 
     void ChatDockWidget::setClient(Client* client)
     {
+        if (m_toolStatusConn)
+            disconnect(m_toolStatusConn);
         m_client = client;
+        if (!m_client)
+            return;
+
+        // Tools carrying a statusText (Tool::setStatusText) get it shown here
+        // automatically while they execute — no app wiring needed.
+        m_toolStatusConn = connect(m_client, &Client::toolInvoked, this,
+            [this](const QString& toolName, const QJsonObject&) {
+                for (const Tool& tool : m_client->registeredTools()) {
+                    if (tool.name() == toolName) {
+                        if (!tool.statusText().isEmpty())
+                            setStatusText(tool.statusText());
+                        return;
+                    }
+                }
+            });
     }
 
     void ChatDockWidget::onSaveClicked()
@@ -404,6 +466,8 @@ namespace QtLLM
             QLayoutItem* item = m_messagesLayout->itemAt(i);
             if (!item || !item->widget())
                 continue;
+            if (item->widget()->property("qtllm_interview").toBool())
+                continue;  // interview cards manage their own labels
             QLabel* label = item->widget()->findChild<QLabel*>();
             if (label)
                 label->setMaximumWidth(availableWidth);
@@ -480,6 +544,30 @@ namespace QtLLM
         return doc.toHtml();
     }
 
+    // Appends a colored rectangle after every 6-digit hex color code mentioned
+    // in assistant text, so colors are visible instead of just numeric.
+    // Runs on the final HTML; the (?![^<]*>) lookahead skips matches inside
+    // tag attributes (there '>' follows before any '<', in text nodes '>' is
+    // always escaped as &gt;).
+    static QString decorateColorSwatches(const QString& html)
+    {
+        static const QRegularExpression rx(
+            "#([0-9a-fA-F]{6})\\b(?![^<]*>)");
+
+        QString result;
+        int last = 0;
+        QRegularExpressionMatchIterator it = rx.globalMatch(html);
+        while (it.hasNext()) {
+            QRegularExpressionMatch m = it.next();
+            result += html.mid(last, m.capturedEnd() - last);
+            result += QString("<span style=\"color:#%1;\">&nbsp;&#9608;&#9608;&#9608;</span>")
+                          .arg(m.captured(1));
+            last = m.capturedEnd();
+        }
+        result += html.mid(last);
+        return result;
+    }
+
     QWidget* ChatDockWidget::createMessageBubble(const QString& text, bool isUser)
     {
         QWidget* container = new QWidget();
@@ -521,7 +609,7 @@ namespace QtLLM
             label->setStyleSheet(
                 "background-color: #DCF8C6; border-radius: 8px; padding: 8px; margin: 4px;");
         } else {
-            label->setText(nameHtml + markdownToHtml(text));
+            label->setText(nameHtml + decorateColorSwatches(markdownToHtml(text)));
             label->setStyleSheet(
                 "background-color: #E8E8E8; border-radius: 8px; padding: 8px; margin: 4px;");
         }

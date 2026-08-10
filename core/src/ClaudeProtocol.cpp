@@ -375,7 +375,18 @@ void ClaudeProtocol::executeToolCalls(const QJsonArray& toolUseBlocks)
 
         ++m_turnToolCalls;
         emit toolInvoked(toolName, toolInput);
-        QJsonObject result = m_toolHandlers[toolName](toolInput);
+        // A throwing handler must not unwind through the network callback
+        // chain — convert to an is_error tool result and keep the turn alive.
+        QJsonObject result;
+        try {
+            result = m_toolHandlers[toolName](toolInput);
+        } catch (const std::exception& e) {
+            result = QJsonObject{{"status", "error"},
+                                 {"message", QString("Internal error: %1").arg(e.what())}};
+        } catch (...) {
+            result = QJsonObject{{"status", "error"},
+                                 {"message", "Internal error: unknown exception in tool handler"}};
+        }
         emit toolCompleted(toolName, result);
 
         QString resultStr = QString::fromUtf8(
