@@ -477,12 +477,34 @@ namespace QtLLM
     static QString inlineMarkdownToHtml(const QString& text)
     {
         QString result = text;
+
+        // Replace links with \x01<n>\x02 placeholders before bold/italic/code,
+        // because those regexes would mangle * and ` inside the generated href.
+        // Supports one level of nested [] in link text: [SwOption[1258]](url)
+        QRegularExpression linkRx("\\[([^\\[\\]]*(?:\\[[^\\[\\]]*\\][^\\[\\]]*)*)\\]\\(([^)]+)\\)");
+        QStringList linkFragments;
+        QRegularExpressionMatchIterator it = linkRx.globalMatch(result);
+        int offset = 0;
+        while (it.hasNext()) {
+            QRegularExpressionMatch m = it.next();
+            QString linkText = m.captured(1).toHtmlEscaped();
+            QString href = m.captured(2).toHtmlEscaped();
+            linkFragments.append(QString("<a href=\"%1\">%2</a>").arg(href, linkText));
+            QString placeholder = QString("\x01%1\x02").arg(linkFragments.size() - 1);
+            result.replace(m.capturedStart() + offset, m.capturedLength(), placeholder);
+            offset += placeholder.length() - m.capturedLength();
+        }
+
         QRegularExpression boldRx("\\*\\*(.+?)\\*\\*");
         result.replace(boldRx, "<b>\\1</b>");
         QRegularExpression italicRx("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)");
         result.replace(italicRx, "<i>\\1</i>");
         QRegularExpression codeRx("`(.+?)`");
         result.replace(codeRx, "<code style=\"background-color: #d0d0d0; padding: 1px 3px;\">\\1</code>");
+
+        for (int i = 0; i < linkFragments.size(); ++i)
+            result.replace(QString("\x01%1\x02").arg(i), linkFragments[i]);
+
         return result;
     }
 
