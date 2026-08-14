@@ -407,7 +407,9 @@ void registerReadTextFile(Client* client, QWidget* dialogParent, bool confirm)
                              {{"path", path}});
 
         qint64 cap = args.value("maxBytes").toInt(65536);
-        cap = qBound<qint64>(1, cap, 262144);
+        // All three arguments must share one type: Qt 6 adds mixed-type qBound
+        // overloads, which make qBound<qint64>(int, qint64, int) ambiguous.
+        cap = qBound(qint64(1), cap, qint64(262144));
 
         const QByteArray data = file.read(cap);
         return toolOk({{"content", QString::fromUtf8(data)},
