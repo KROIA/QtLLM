@@ -1,3 +1,6 @@
+> **Status: implemented in `13e7601`.** Kept as a record of the requirements;
+> this is not open work. See `documentation/ToolUse.md` for the shipped API.
+
 # Feature Request — QtLLM: generische Tool-Infrastruktur
 
 **An:** QtLLM-Repo (`Projects\QtLLM`, `core/`)

@@ -1,3 +1,14 @@
+> **Status: historical.** This is the original pre-implementation design proposal
+> for v1.0.0, kept for context on why the library is shaped the way it is.
+>
+> **It does not describe the current API.** The shipped `QtLLM::Client` has since
+> gained a `Provider` overload, a `registerTool(const Tool&, ToolHandler)` form,
+> tool gating (`setToolEnabled`, `setValidateToolInput`, `setMaxToolCallsPerTurn`,
+> `setToolConsentHandler`), plus Ollama support, pricing, usage history, and the
+> chat widgets — none of which appear below.
+>
+> For the real API see `core/inc/` and `documentation/API.md`.
+
 # QtLLM — C++ Qt5 Library for LLM Integration
 
 ## Project Overview
