@@ -52,6 +52,16 @@ void ClaudeProtocol::setSystemPrompt(const QString& systemPrompt)
     m_systemPrompt = systemPrompt;
 }
 
+void ClaudeProtocol::setApiKey(const QString& apiKey)
+{
+    m_apiKey = apiKey;
+}
+
+void ClaudeProtocol::setUrl(const QUrl& url)
+{
+    m_url = url;
+}
+
 void ClaudeProtocol::setTools(const QList<QJsonObject>& toolSchemas,
                               const QMap<QString, ToolHandler>& handlers)
 {
@@ -78,6 +88,7 @@ void ClaudeProtocol::startNewTurn(const QString& userMessage)
     m_turnToolCalls               = 0;
     m_turnToolIterations          = 0;
     m_turnTimerStarted            = false;
+    m_historyLenBeforeTurn        = m_history.size();
 
     QJsonObject msg;
     msg["role"]    = "user";
@@ -95,6 +106,20 @@ void ClaudeProtocol::drainQueue()
 
 void ClaudeProtocol::sendRequest()
 {
+    // Fail loudly and instantly instead of sending x-api-key: "" - Anthropic
+    // does return a 401 with a parseable error body for that (so this isn't
+    // the only path to a visible error), but skipping the round trip gives
+    // immediate, unambiguous feedback instead of waiting on a network error.
+    if (m_apiKey.isEmpty()) {
+        rollbackFailedTurn();
+        emit errorOccurred(QStringLiteral(
+            "No Anthropic API key set - pass a non-empty apiKey to the "
+            "Client constructor before sending messages."));
+        emit requestFinished();
+        drainQueue();
+        return;
+    }
+
     QJsonObject body = buildRequestBody();
     QByteArray bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
@@ -206,15 +231,29 @@ void ClaudeProtocol::onReplyReceived(const QByteArray& data)
 {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
+        rollbackFailedTurn();
         emit errorOccurred("Failed to parse API response");
+        emit requestFinished();
         drainQueue();
         return;
     }
 
     QJsonObject root = doc.object();
 
-    if (root.contains("error")) {
+    // Real Anthropic errors are {"error":{"message":...}}. Gateways/proxies in
+    // front of the real API (Azure/Foundry-style deployments, LiteLLM, etc.)
+    // often return a flatter {"detail": "..."} shape instead for the same
+    // HTTP-error case - recognize both, otherwise the error body gets fed to
+    // processResponse() as if it were a real message (empty stop_reason,
+    // empty content) which silently does nothing: no error, no response,
+    // and the turn-in-progress flag never clears, wedging every future send.
+    if (root.contains("error") || root.contains("detail")) {
         QString message = root["error"].toObject()["message"].toString();
+        if (message.isEmpty())
+            message = root["detail"].toString();
+        if (message.isEmpty())
+            message = QStringLiteral("Request failed (no error message in response)");
+        rollbackFailedTurn();
         emit errorOccurred(message);
         emit requestFinished();
         drainQueue();
@@ -235,6 +274,18 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
 
     QString    stopReason = responseJson["stop_reason"].toString();
     QJsonArray content    = responseJson["content"].toArray();
+
+    // Some models routed through a non-Anthropic gateway/proxy don't
+    // reliably emit a real tool_use block - they just end the turn with the
+    // call serialized as plain JSON text. Detect and treat it exactly like a
+    // real tool_use response instead of showing the raw JSON to the user.
+    if (stopReason == "end_turn") {
+        QJsonArray fallback = extractFallbackToolUse(assembleText(content));
+        if (!fallback.isEmpty()) {
+            content    = fallback;
+            stopReason = "tool_use";
+        }
+    }
 
     if (stopReason == "end_turn" || stopReason == "max_tokens") {
         QJsonObject assistantMsg;
@@ -347,7 +398,19 @@ void ClaudeProtocol::processResponse(const QJsonObject& responseJson)
         }
 
         sendRequest();
+        return;
     }
+
+    // Defense in depth: an unrecognized/empty stop_reason (a response shape
+    // this client doesn't know about, from some future API change or a
+    // nonstandard gateway) must still end the turn - silently doing nothing
+    // here would leave m_turnInProgress stuck true forever, wedging every
+    // subsequent sendPrompt() into the queue with no way out.
+    rollbackFailedTurn();
+    emit errorOccurred(QStringLiteral("Unexpected API response (stop_reason=\"%1\"): %2")
+        .arg(stopReason, QString::fromUtf8(QJsonDocument(responseJson).toJson(QJsonDocument::Compact))));
+    emit requestFinished();
+    drainQueue();
 }
 
 void ClaudeProtocol::executeToolCalls(const QJsonArray& toolUseBlocks)
@@ -406,6 +469,31 @@ void ClaudeProtocol::executeToolCalls(const QJsonArray& toolUseBlocks)
     m_history.append(userMsg);
 }
 
+QJsonArray ClaudeProtocol::extractFallbackToolUse(const QString& text) const
+{
+    QJsonDocument doc = QJsonDocument::fromJson(text.trimmed().toUtf8());
+    if (!doc.isObject())
+        return {};
+
+    QJsonObject obj = doc.object();
+    QString name = obj["name"].toString();
+    if (name.isEmpty() || !m_toolHandlers.contains(name))
+        return {};
+
+    QJsonObject input = obj.contains("parameters") ? obj["parameters"].toObject()
+                       : obj.contains("input")      ? obj["input"].toObject()
+                       : obj.contains("arguments")   ? obj["arguments"].toObject()
+                       : QJsonObject();
+
+    QJsonObject block;
+    block["type"]  = "tool_use";
+    block["id"]    = QStringLiteral("fallback_tool_use");
+    block["name"]  = name;
+    block["input"] = input;
+
+    return QJsonArray{ block };
+}
+
 QString ClaudeProtocol::assembleText(const QJsonArray& content) const
 {
     QString assembled;
@@ -420,9 +508,16 @@ QString ClaudeProtocol::assembleText(const QJsonArray& content) const
 
 void ClaudeProtocol::onTransportError(const QString& message)
 {
+    rollbackFailedTurn();
     emit errorOccurred(message);
     emit requestFinished();
     drainQueue();
+}
+
+void ClaudeProtocol::rollbackFailedTurn()
+{
+    while (m_history.size() > m_historyLenBeforeTurn)
+        m_history.removeAt(m_history.size() - 1);
 }
 
 void ClaudeProtocol::fetchModels()

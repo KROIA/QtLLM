@@ -9,11 +9,13 @@
 #include <QLabel>
 #include <QTimer>
 #include <QJsonObject>
+#include "UsageStats.h"
 
 namespace QtLLM
 {
     class Client;
     class InterviewWidget;
+    class ContextUsageBar;
 
     class QT_LLM_API ChatDockWidget : public QDockWidget
     {
@@ -43,6 +45,11 @@ namespace QtLLM
         void updateTokenUsage(int inputTokens, int outputTokens);
         void setFontSizePercent(int percent);
 
+        // Updates the context usage bar. Call from a slot connected to
+        // Client::contextChanged() for live updates, or setClient() below
+        // wires this up automatically.
+        void setContextBreakdown(const ContextBreakdown& breakdown);
+
         // Bubble name labels. Set to an empty string to hide the header entirely
         // on that side; otherwise the given text is shown (HTML-escaped).
         void setAssistantName(const QString& name);
@@ -71,12 +78,16 @@ namespace QtLLM
         void saveConversationRequested();
         // Result of an interview card added via addInterviewWidget()/execInterview().
         void interviewFinished(const QJsonObject& result);
+        // Emitted when the clear button is clicked and no client is bound
+        // (with a client bound, clearConversation() is called directly).
+        void clearContextRequested();
 
     private slots:
         void onSendClicked();
         void onCancelClicked();
         void onCancelTimerTimeout();
         void onSaveClicked();
+        void onClearClicked();
 
     protected:
         void resizeEvent(QResizeEvent* event) override;
@@ -86,6 +97,7 @@ namespace QtLLM
         void scrollToBottom();
         void updateBubbleWidths();
         QWidget* createMessageBubble(const QString& text, bool isUser);
+        void addContextClearedMarker();
 
         QWidget* m_centralWidget = nullptr;
         QVBoxLayout* m_messagesLayout = nullptr;
@@ -95,6 +107,8 @@ namespace QtLLM
         QPushButton* m_cancelButton = nullptr;
         QPushButton* m_saveButton = nullptr;
         QPushButton* m_settingsButton = nullptr;
+        ContextUsageBar* m_contextBar = nullptr;
+        QPushButton* m_clearButton = nullptr;
         Client* m_client = nullptr;  // optional conversation source for built-in Save
         QMetaObject::Connection m_toolStatusConn;  // auto statusText on toolInvoked
         QLabel* m_loadingLabel = nullptr;

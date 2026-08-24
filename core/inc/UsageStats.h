@@ -27,4 +27,25 @@ struct QT_LLM_API UsageStats
     int    sessionTotalTokens() const { return sessionInputTokens + sessionOutputTokens; }
 };
 
+// Rough (chars/4) breakdown of what currently makes up the next request's
+// context, by category. Not exact token counts — the real tokenizer runs
+// server-side — but close enough to visualize where the context budget goes.
+struct QT_LLM_API ContextBreakdown
+{
+    int systemPromptTokens = 0;
+    int toolsTokens        = 0;
+    int messagesTokens     = 0;
+    int contextWindowTokens = 200000; // model's max context size; real value once fetched, static estimate until then
+
+    // Real token count for the whole request (system + tools + messages),
+    // as reported by the provider's own tokenizer via ContextInfoProvider.
+    // -1 until the first async count comes back; segments above stay
+    // chars/4 estimates regardless (categorizing by section isn't something
+    // any tokenizer API reports, only the aggregate is real).
+    int exactUsedTokens = -1;
+
+    int usedTokens() const { return systemPromptTokens + toolsTokens + messagesTokens; }
+    int bestUsedTokens() const { return exactUsedTokens >= 0 ? exactUsedTokens : usedTokens(); }
+};
+
 } // namespace QtLLM

@@ -1,6 +1,8 @@
 #include "Client.h"
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
+#include "ClaudeContextInfoProvider.h"
+#include "OllamaContextInfoProvider.h"
 #include "ToolResult.h"
 #include "UsageSample.h"
 #include "Pricing.h"
@@ -8,6 +10,7 @@
 #include <QJsonDocument>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QTimer>
 
 namespace QtLLM {
 
@@ -18,7 +21,9 @@ Client::Client(const QString& apiKey, const QString& url, QObject* parent)
     , m_currentModel("claude-opus-4-5")
     , m_currentProvider("claude")
 {
+    m_contextInfoProvider = new ClaudeContextInfoProvider(apiKey, QUrl(url), this);
     connectProtocol();
+    fetchAvailableModels();
 }
 
 Client::Client(Provider provider, const QString& url, const QString& apiKey, QObject* parent)
@@ -29,17 +34,20 @@ Client::Client(Provider provider, const QString& url, const QString& apiKey, QOb
     switch (provider) {
     case Provider::Ollama:
         m_protocol = new OllamaProtocol(QUrl(url), this);
+        m_contextInfoProvider = new OllamaContextInfoProvider(QUrl(url), this);
         m_currentProvider = "ollama";
         m_currentModel    = "llama3.2";
         break;
     case Provider::Claude:
     default:
         m_protocol = new ClaudeProtocol(apiKey, QUrl(url), this);
+        m_contextInfoProvider = new ClaudeContextInfoProvider(apiKey, QUrl(url), this);
         m_currentProvider = "claude";
         m_currentModel    = "claude-opus-4-5";
         break;
     }
     connectProtocol();
+    fetchAvailableModels();
 }
 
 Client::~Client() = default;
@@ -55,6 +63,18 @@ void Client::connectProtocol()
     connect(m_protocol, &ProtocolBase::requestStarted,  this, &Client::requestStarted);
     connect(m_protocol, &ProtocolBase::requestFinished, this, &Client::requestFinished);
     connect(m_protocol, &ProtocolBase::modelsFetched,   this, &Client::modelsAvailable);
+
+    connect(m_contextInfoProvider, &ContextInfoProvider::contextWindowTokensReady, this, &Client::onContextWindowTokensReady);
+    connect(m_contextInfoProvider, &ContextInfoProvider::tokenCountReady,          this, &Client::onExactTokenCountReady);
+    connect(m_contextInfoProvider, &ContextInfoProvider::contextInfoErrorOccurred, this, &Client::onContextInfoError);
+    connect(this, &Client::contextChanged, this, &Client::refreshContextInfo);
+    connect(this, &Client::modelsAvailable, this, &Client::validateCurrentModel);
+}
+
+void Client::validateCurrentModel(const QStringList& models)
+{
+    if (!models.isEmpty() && !models.contains(m_currentModel))
+        setModel(models.first());
 }
 
 void Client::onProtocolResponseReady(const QString& text)
@@ -68,6 +88,7 @@ void Client::onProtocolResponseReady(const QString& text)
     msg["content"] = text;
     m_history.append(msg);
     emit responseReady(text);
+    emit contextChanged();
 }
 
 void Client::onProtocolStatsReady(const QtLLM::UsageStats& stats)
@@ -89,12 +110,86 @@ void Client::onProtocolError(const QString& errorMessage)
 #if LOGGER_LIBRARY_AVAILABLE == 1
     m_logger.logError(errorMessage.toStdString());
 #endif
+    // The turn that triggered this error never got an assistant reply - drop
+    // the dangling user message so this (separate, simplified) history copy
+    // stays consistent with the protocol's own rollback.
+    if (!m_history.isEmpty() && m_history.last().toObject()["role"].toString() == "user")
+        m_history.removeAt(m_history.size() - 1);
+
     emit errorOccurred(errorMessage);
+    emit contextChanged();
 }
 
 void Client::setModel(const QString& model)       { m_currentModel = model; m_protocol->setModel(model); }
 void Client::setMaxTokens(int maxTokens)           { m_protocol->setMaxTokens(maxTokens); }
-void Client::setSystemPrompt(const QString& p)     { m_systemPrompt = p; m_protocol->setSystemPrompt(p); }
+void Client::setSystemPrompt(const QString& p)     { m_systemPrompt = p; m_protocol->setSystemPrompt(p); emit contextChanged(); }
+
+void Client::setApiKey(const QString& apiKey)
+{
+    if (auto* claude = qobject_cast<ClaudeProtocol*>(m_protocol)) {
+        claude->setApiKey(apiKey);
+        if (auto* claudeInfo = qobject_cast<ClaudeContextInfoProvider*>(m_contextInfoProvider))
+            claudeInfo->setApiKey(apiKey);
+    }
+    // Ollama needs no API key - no-op there.
+}
+
+void Client::setEndpointUrl(const QString& url)
+{
+    const QUrl u(url);
+    if (auto* claude = qobject_cast<ClaudeProtocol*>(m_protocol)) {
+        claude->setUrl(u);
+        if (auto* claudeInfo = qobject_cast<ClaudeContextInfoProvider*>(m_contextInfoProvider))
+            claudeInfo->setMessagesUrl(u);
+    } else if (auto* ollama = qobject_cast<OllamaProtocol*>(m_protocol)) {
+        ollama->setUrl(u);
+        if (auto* ollamaInfo = qobject_cast<OllamaContextInfoProvider*>(m_contextInfoProvider))
+            ollamaInfo->setBaseUrl(u);
+    }
+}
+
+void Client::setProvider(Provider provider, const QString& url, const QString& apiKey)
+{
+    if (m_protocol) {
+        m_protocol->disconnect(this);
+        m_protocol->deleteLater();
+    }
+    if (m_contextInfoProvider) {
+        m_contextInfoProvider->disconnect(this);
+        m_contextInfoProvider->deleteLater();
+    }
+
+    switch (provider) {
+    case Provider::Ollama:
+        m_protocol = new OllamaProtocol(QUrl(url), this);
+        m_contextInfoProvider = new OllamaContextInfoProvider(QUrl(url), this);
+        m_currentProvider = "ollama";
+        break;
+    case Provider::Claude:
+    default:
+        m_protocol = new ClaudeProtocol(apiKey, QUrl(url), this);
+        m_contextInfoProvider = new ClaudeContextInfoProvider(apiKey, QUrl(url), this);
+        m_currentProvider = "claude";
+        break;
+    }
+    connectProtocol();
+
+    m_protocol->setModel(m_currentModel);
+    m_protocol->setSystemPrompt(m_systemPrompt);
+    syncToolsToProtocol();
+
+    // A conversation with one provider's message format can't continue with
+    // another - start fresh, same as clearConversation().
+    m_history = QJsonArray();
+    m_protocol->clearHistory();
+    m_lastStats = UsageStats{};
+    m_contextWindowCache.clear();
+    m_exactUsedTokens = -1;
+    m_lastCountedHash = 0;
+
+    emit contextChanged();
+    fetchAvailableModels();
+}
 
 void Client::registerTool(const Tool& tool, ToolHandler handler)
 {
@@ -108,6 +203,7 @@ void Client::registerTool(const Tool& tool, ToolHandler handler)
     rt.tool         = tool;
     m_tools[tool.name()] = rt;
     syncToolsToProtocol();
+    emit contextChanged();
 }
 
 void Client::registerTool(const QString& name,
@@ -137,6 +233,7 @@ void Client::registerTool(const QString& name,
     rt.tool         = Tool().setName(name).setDescription(description);
     m_tools[name]   = rt;
     syncToolsToProtocol();
+    emit contextChanged();
 }
 
 void Client::setToolEnabled(const QString& toolName, bool enabled)
@@ -152,6 +249,7 @@ void Client::setToolEnabled(const QString& toolName, bool enabled)
     // Mandatory: keep the advertised schema list and the handler map in sync,
     // otherwise the protocol reports "No handler registered for tool".
     syncToolsToProtocol();
+    emit contextChanged();
 }
 
 bool Client::isToolEnabled(const QString& toolName) const
@@ -215,6 +313,7 @@ void Client::unregisterTool(const QString& toolName)
 #endif
     m_tools.remove(toolName);
     syncToolsToProtocol();
+    emit contextChanged();
 }
 
 void Client::syncToolsToProtocol()
@@ -287,6 +386,7 @@ void Client::sendPrompt(const QString& userMessage)
     m_toolCallsThisTurn = 0;
     m_limitSignalEmitted = false;
     m_protocol->beginTurn(userMessage);
+    emit contextChanged();
 }
 
 void Client::sendToolMessage(const QString& toolName, const QJsonObject& input)
@@ -320,6 +420,7 @@ void Client::clearConversation()
     m_lastStats = UsageStats{};
     m_toolCallsThisTurn = 0;
     m_limitSignalEmitted = false;
+    emit contextChanged();
 }
 
 QJsonArray Client::conversationHistory() const
@@ -330,6 +431,119 @@ QJsonArray Client::conversationHistory() const
 UsageStats Client::usageStats() const
 {
     return m_lastStats;
+}
+
+// Last-resort fallback when neither an explicit resolver nor a live
+// ContextInfoProvider result (m_contextWindowCache) is available yet -
+// e.g. the very first paint before the background fetch lands.
+static int builtinContextWindowTokensFor(const QString& provider, const QString&)
+{
+    if (provider == QStringLiteral("claude"))
+        return 200000; // every current Claude model publishes 200k (1M in beta, not assumed here)
+    return 8192; // typical Ollama default num_ctx when unknown
+}
+
+void Client::setContextWindowResolver(ContextWindowResolver resolver)
+{
+    m_contextWindowResolver = std::move(resolver);
+}
+
+ContextBreakdown Client::contextBreakdown() const
+{
+    ContextBreakdown b;
+    int resolved = m_contextWindowResolver ? m_contextWindowResolver(m_currentProvider, m_currentModel) : 0;
+    if (resolved > 0)
+        b.contextWindowTokens = resolved;
+    else if (m_contextWindowCache.contains(m_currentModel))
+        b.contextWindowTokens = m_contextWindowCache.value(m_currentModel);
+    else
+        b.contextWindowTokens = builtinContextWindowTokensFor(m_currentProvider, m_currentModel);
+
+    b.exactUsedTokens = m_exactUsedTokens;
+
+    auto estimateTokens = [](qsizetype chars) { return static_cast<int>(chars / 4); };
+
+    b.systemPromptTokens = estimateTokens(m_systemPrompt.toUtf8().size());
+
+    qsizetype toolsChars = 0;
+    bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+    for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+        if (!it.value().enabled)
+            continue;
+        const QJsonObject& schema = isOllama ? it.value().openAiSchema : it.value().claudeSchema;
+        toolsChars += QJsonDocument(schema).toJson(QJsonDocument::Compact).size();
+    }
+    b.toolsTokens = estimateTokens(toolsChars);
+
+    qsizetype messagesChars = QJsonDocument(m_protocol->conversationMessages())
+                                  .toJson(QJsonDocument::Compact).size();
+    b.messagesTokens = estimateTokens(messagesChars);
+
+    return b;
+}
+
+// Debounced: coalesces a burst of contextChanged() emissions (e.g. several
+// registerTool() calls during app startup) into a single background refresh.
+void Client::refreshContextInfo()
+{
+    if (m_contextInfoRefreshScheduled)
+        return;
+    m_contextInfoRefreshScheduled = true;
+
+    QTimer::singleShot(0, this, [this]() {
+        m_contextInfoRefreshScheduled = false;
+        if (!m_contextInfoProvider)
+            return;
+
+        if (!m_contextWindowFetchInFlight && !m_contextWindowCache.contains(m_currentModel)) {
+            m_contextWindowFetchInFlight = true;
+            m_contextInfoProvider->fetchContextWindowTokens(m_currentModel);
+        }
+
+        bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+        QJsonArray toolSchemas;
+        for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+            if (it.value().enabled)
+                toolSchemas.append(isOllama ? it.value().openAiSchema : it.value().claudeSchema);
+        }
+        QJsonArray messages = m_protocol->conversationMessages();
+
+        QByteArray sigBytes = m_systemPrompt.toUtf8()
+            + QJsonDocument(toolSchemas).toJson(QJsonDocument::Compact)
+            + QJsonDocument(messages).toJson(QJsonDocument::Compact);
+        uint sig = qHash(sigBytes);
+        if (m_tokenCountFetchInFlight || sig == m_lastCountedHash)
+            return;
+
+        m_tokenCountFetchInFlight = true;
+        m_lastCountedHash = sig;
+        m_contextInfoProvider->countTokens(m_currentModel, m_systemPrompt, toolSchemas, messages);
+    });
+}
+
+void Client::onContextWindowTokensReady(int tokens)
+{
+    m_contextWindowFetchInFlight = false;
+    if (tokens > 0)
+        m_contextWindowCache[m_currentModel] = tokens;
+    emit contextChanged();
+}
+
+void Client::onExactTokenCountReady(int tokens)
+{
+    m_tokenCountFetchInFlight = false;
+    m_exactUsedTokens = tokens;
+    emit contextChanged();
+}
+
+void Client::onContextInfoError(const QString&)
+{
+    // Best-effort feature: silently fall back to the chars/4 estimate and
+    // the static context-window table already used before either fetch
+    // completes. Just clear the in-flight flags so the next contextChanged()
+    // retries instead of getting stuck forever.
+    m_contextWindowFetchInFlight = false;
+    m_tokenCountFetchInFlight = false;
 }
 
 UsageHistory* Client::usageHistory()

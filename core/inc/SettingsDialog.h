@@ -21,6 +21,8 @@ namespace QtLLM
     class Client;
     class UsageHistory;
     class UsageStatsWidget;
+    class ContextUsageBar;
+    class ProtocolBase;
 
     class QT_LLM_API SettingsDialog : public QDialog
     {
@@ -80,6 +82,15 @@ namespace QtLLM
         void updateFieldVisibility();
         void refreshToolsTab();
         void applyToolToggles();
+        void refreshContextTab();
+        // Fetches models for whichever provider/credentials are currently
+        // typed into this dialog's own fields - independent of whatever
+        // provider the app's live Client happens to be bound to, since that
+        // may not match the combo the user just switched to (Client is
+        // provider-locked at construction; switching this dialog's Provider
+        // combo doesn't reconstruct it). Self-contained: spins up a throwaway
+        // protocol instance just to list models, then discards it.
+        void fetchModelsForCurrentProvider();
 
         QComboBox*   m_providerCombo = nullptr;
         QLineEdit*   m_apiKeyEdit = nullptr;
@@ -98,8 +109,11 @@ namespace QtLLM
 
         QTabWidget*       m_tabWidget = nullptr;
         UsageStatsWidget* m_statsWidget = nullptr;
+        ContextUsageBar*  m_contextBar = nullptr;
+        QLabel*           m_contextDetailsLabel = nullptr;
 
         QPointer<Client>          m_client;
+        QPointer<ProtocolBase>    m_modelFetchProtocol;  // throwaway, see fetchModelsForCurrentProvider()
         QWidget*                  m_toolsPage = nullptr;
         QVBoxLayout*              m_toolsLayout = nullptr;
         QMap<QString, QCheckBox*> m_toolChecks;   // tool name -> checkbox

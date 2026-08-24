@@ -3,6 +3,9 @@
 #include "UsageHistory.h"
 #include "Client.h"
 #include "Tool.h"
+#include "ContextUsageBar.h"
+#include "ClaudeProtocol.h"
+#include "OllamaProtocol.h"
 #include <QVBoxLayout>
 #include <QPushButton>
 #include <QTabWidget>
@@ -102,6 +105,22 @@ namespace QtLLM
         m_statsWidget = new UsageStatsWidget(this);
         m_tabWidget->addTab(m_statsWidget, QString::fromUtf16(u"Statistik"));
 
+        // ---- Context tab ----
+        QWidget* contextPage = new QWidget(this);
+        QVBoxLayout* contextLayout = new QVBoxLayout(contextPage);
+
+        m_contextBar = new ContextUsageBar(contextPage);
+        m_contextBar->setBarHeight(24);
+        contextLayout->addWidget(m_contextBar);
+
+        m_contextDetailsLabel = new QLabel(contextPage);
+        m_contextDetailsLabel->setWordWrap(true);
+        m_contextDetailsLabel->setTextFormat(Qt::RichText);
+        contextLayout->addWidget(m_contextDetailsLabel);
+        contextLayout->addStretch();
+
+        m_tabWidget->addTab(contextPage, "Context");
+
         mainLayout->addWidget(m_tabWidget, 1);
 
         m_buttonBox = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
@@ -111,8 +130,10 @@ namespace QtLLM
 
         connect(m_providerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &SettingsDialog::onProviderChanged);
-        connect(m_detectModelsBtn, &QPushButton::clicked,
-                this, &SettingsDialog::detectModelsRequested);
+        connect(m_detectModelsBtn, &QPushButton::clicked, this, [this]() {
+            emit detectModelsRequested();   // back-compat: apps may still react to this
+            fetchModelsForCurrentProvider();
+        });
         connect(m_buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked,
                 this, &SettingsDialog::onApply);
         connect(m_buttonBox, &QDialogButtonBox::rejected,
@@ -134,12 +155,40 @@ namespace QtLLM
 
     void SettingsDialog::onProviderChanged(int index)
     {
+        // Drop the other provider's model list instead of mixing entries
+        // from both into one combo.
+        m_modelCombo->clear();
         if (static_cast<Provider>(index) == Provider::Claude)
             m_modelCombo->setEditText("claude-haiku-4-5");
         else
             m_modelCombo->setEditText("llama3.2:latest");
 
         updateFieldVisibility();
+        emit detectModelsRequested();  // back-compat: apps may still react to this
+        fetchModelsForCurrentProvider();
+    }
+
+    void SettingsDialog::fetchModelsForCurrentProvider()
+    {
+        // Drop any still-in-flight throwaway fetch from a previous click/switch.
+        if (m_modelFetchProtocol)
+            delete m_modelFetchProtocol;
+
+        if (provider() == Provider::Claude) {
+            if (apiKey().isEmpty() || endpointUrl().isEmpty())
+                return;
+            m_modelFetchProtocol = new ClaudeProtocol(apiKey(), QUrl(endpointUrl()), this);
+        } else {
+            if (ollamaUrl().isEmpty())
+                return;
+            // fetchModels() only uses the host/port (it rewrites the path to
+            // /api/tags itself), so a full chat-endpoint-style URL here is fine.
+            m_modelFetchProtocol = new OllamaProtocol(QUrl(ollamaUrl()), this);
+        }
+
+        connect(m_modelFetchProtocol, &ProtocolBase::modelsFetched,
+                this, &SettingsDialog::setAvailableModels);
+        m_modelFetchProtocol->fetchModels();
     }
 
     void SettingsDialog::onApply()
@@ -152,6 +201,9 @@ namespace QtLLM
     void SettingsDialog::showEvent(QShowEvent* event)
     {
         refreshToolsTab();
+        refreshContextTab();
+        emit detectModelsRequested();  // back-compat: apps may still react to this
+        fetchModelsForCurrentProvider();
         QDialog::showEvent(event);
     }
 
@@ -159,6 +211,42 @@ namespace QtLLM
     {
         m_client = client;
         refreshToolsTab();
+        refreshContextTab();
+        if (m_client) {
+            connect(m_client, &Client::contextChanged, this, &SettingsDialog::refreshContextTab);
+        }
+    }
+
+    void SettingsDialog::refreshContextTab()
+    {
+        if (!m_client) {
+            m_contextBar->setBreakdown(ContextBreakdown{});
+            m_contextDetailsLabel->setText(
+                "No client bound - call SettingsDialog::setClient() to show live context usage here.");
+            return;
+        }
+
+        const ContextBreakdown b = m_client->contextBreakdown();
+        m_contextBar->setBreakdown(b);
+
+        const bool exact = b.exactUsedTokens >= 0;
+        m_contextDetailsLabel->setText(QString(
+            "<b>System prompt:</b> ~%1 tokens<br>"
+            "<b>Tools:</b> ~%2 tokens<br>"
+            "<b>Messages:</b> ~%3 tokens<br>"
+            "<b>Total used:</b> %4%5 / %6 tokens (%7%)<br><br>"
+            "<span style='color:#888;'>Per-segment split above is a character-count (chars / 4) "
+            "estimate - no tokenizer API breaks a count down by section. %8</span>")
+            .arg(b.systemPromptTokens)
+            .arg(b.toolsTokens)
+            .arg(b.messagesTokens)
+            .arg(exact ? "" : "~")
+            .arg(b.bestUsedTokens())
+            .arg(b.contextWindowTokens)
+            .arg(100.0 * b.bestUsedTokens() / qMax(b.contextWindowTokens, 1), 0, 'f', 1)
+            .arg(exact
+                ? "Total is confirmed by the provider's own tokenizer API."
+                : "Total is still an estimate too - waiting on the provider's tokenizer API."));
     }
 
     void SettingsDialog::refreshToolsTab()
@@ -277,7 +365,14 @@ namespace QtLLM
             if (m_modelCombo->findText(m) < 0)
                 m_modelCombo->addItem(m);
         }
-        // Preserve the user's typed/selected value
+
+        // The current text is often just a hardcoded guess (set on provider
+        // switch before the real list is known) - if it isn't actually one of
+        // the models this provider offers, auto-select a real one instead of
+        // keeping a name that will fail at request time.
+        if (!models.isEmpty() && !models.contains(current))
+            current = models.first();
+
         m_modelCombo->setEditText(current);
     }
 }

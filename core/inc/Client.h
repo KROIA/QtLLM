@@ -16,6 +16,8 @@
 
 namespace QtLLM {
 
+class ContextInfoProvider;
+
 // Selects which LLM provider protocol Client uses internally.
 enum class Provider {
     Claude,  // Anthropic Claude Messages API (default)
@@ -26,6 +28,13 @@ enum class Provider {
 // model receives {"status":"error","message":"user declined"} instead.
 // Invoked synchronously on the GUI thread, so a modal dialog is possible.
 using ToolConsentHandler = std::function<bool(const QString& toolName, const QJsonObject& input)>;
+
+// App-supplied source for a model's max context window size, consulted by
+// contextBreakdown(). Return <= 0 to fall through to the built-in static
+// table. Exists so that once a provider exposes this via API instead of only
+// docs, the app can inject a live lookup without Client changing at all —
+// same shape as PricingRegistry::PricingResolver.
+using ContextWindowResolver = std::function<int(const QString& provider, const QString& model)>;
 
 class QT_LLM_API Client : public QObject
 {
@@ -51,6 +60,18 @@ public:
     void setMaxTokens(int maxTokens);
     // Injected as first message each request; empty = omitted.
     void setSystemPrompt(const QString& systemPrompt);
+
+    // Change the API key / endpoint after construction (e.g. applying a
+    // Settings dialog edit) - no-ops on the field the current provider
+    // doesn't use (setApiKey() for Ollama, since it needs no auth).
+    void setApiKey(const QString& apiKey);
+    void setEndpointUrl(const QString& url);
+
+    // Switch providers at runtime (e.g. applying a Settings dialog change).
+    // Tears down and replaces the internal protocol + context-info provider
+    // and clears conversation history, since message formats aren't
+    // compatible across providers. apiKey is ignored for Ollama.
+    void setProvider(Provider provider, const QString& url, const QString& apiKey = QString());
 
     // Register a tool the LLM can call. The handler is called synchronously when the LLM invokes the tool.
     void registerTool(const Tool& tool, ToolHandler handler);
@@ -108,6 +129,25 @@ public:
     // Returns the statistics from the most recently completed turn.
     UsageStats usageStats() const;
 
+    // Breakdown of the current context: system prompt, enabled tool schemas,
+    // and conversation history (segments are always a chars/4 estimate -
+    // no tokenizer API breaks its count down by section). contextWindowTokens
+    // and exactUsedTokens become real, provider-reported values once the
+    // background ContextInfoProvider calls triggered by contextChanged()
+    // complete; until then they hold estimates/-1. Cheap to call from a UI
+    // update slot - no I/O happens here, it just reads cached state.
+    ContextBreakdown contextBreakdown() const;
+
+    // Real per-provider tokenizer / context-window source backing the
+    // fields above (OllamaContextInfoProvider or ClaudeContextInfoProvider).
+    // Exposed for apps that want to call it directly or swap it out.
+    ContextInfoProvider* contextInfoProvider() const { return m_contextInfoProvider; }
+
+    // Install a custom resolver for the model's context window size, taking
+    // priority over both the live ContextInfoProvider result and the
+    // built-in static table. Pass nullptr to reset. GUI-thread only.
+    void setContextWindowResolver(ContextWindowResolver resolver);
+
     // Persistent per-turn usage history (JSONL-backed).
     UsageHistory* usageHistory();
 
@@ -138,15 +178,30 @@ signals:
     void modelsAvailable(const QStringList& models);
     // Emitted once per turn when setMaxToolCallsPerTurn() is exceeded.
     void toolCallLimitReached(int limit);
+    // Emitted whenever anything feeding contextBreakdown() changes (system
+    // prompt, tool set, or conversation history) — hook for live context UI.
+    void contextChanged();
 
 private slots:
     void onProtocolResponseReady(const QString& text);
     void onProtocolStatsReady(const QtLLM::UsageStats& stats);
     void onProtocolError(const QString& errorMessage);
+    void onContextWindowTokensReady(int tokens);
+    void onExactTokenCountReady(int tokens);
+    void onContextInfoError(const QString& message);
+    // Self-corrects the current model if it isn't actually one of the models
+    // this provider offers - connected to modelsAvailable() and triggered
+    // once automatically right after construction (see fetchAvailableModels()
+    // call in each constructor), so a hardcoded/stale default model doesn't
+    // silently fail every send until the app happens to fetch a model list
+    // some other way (e.g. opening a Settings dialog). Never overrides a
+    // model that genuinely is offered, even if it isn't first in the list.
+    void validateCurrentModel(const QStringList& models);
 
 private:
     void connectProtocol();
     void syncToolsToProtocol();
+    void refreshContextInfo();  // debounced; called after every contextChanged()
 
     struct RegisteredTool {
         QJsonObject claudeSchema;   // toApiObject() format
@@ -168,10 +223,19 @@ private:
     QString                       m_currentProvider;
     QString                       m_systemPrompt;
     ToolConsentHandler            m_consentHandler;
+    ContextWindowResolver         m_contextWindowResolver;
     bool                          m_validateToolInput = false;
     int                           m_maxToolCallsPerTurn = 0;   // 0 = unlimited
     int                           m_toolCallsThisTurn = 0;
     bool                          m_limitSignalEmitted = false;
+
+    ContextInfoProvider*          m_contextInfoProvider = nullptr;
+    QMap<QString, int>            m_contextWindowCache;             // model -> real max tokens
+    bool                          m_contextWindowFetchInFlight = false;
+    bool                          m_tokenCountFetchInFlight = false;
+    bool                          m_contextInfoRefreshScheduled = false;
+    uint                          m_lastCountedHash = 0;
+    int                           m_exactUsedTokens = -1;
 
 #if LOGGER_LIBRARY_AVAILABLE == 1
     Log::LogObject m_logger{Logger::getID(), "QtLLM::Client"};

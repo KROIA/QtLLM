@@ -47,7 +47,16 @@ private:
     bool         m_isOllama = false;
     QString      m_currentModel;
     QString      m_systemPrompt;
+    QString      m_apiKey;
+    QString      m_endpointUrl;   // full Claude messages URL, or full Ollama chat URL
     int          m_fontSizePercent = 100;
+
+    // Remembered per-provider so switching Settings' Provider combo back and
+    // forth restores exactly what was last configured for each one, instead
+    // of resetting to a hardcoded default (in-RAM only, not persisted to disk).
+    QString      m_savedClaudeApiKey;
+    QString      m_savedClaudeEndpointUrl;
+    QString      m_savedOllamaUrl;
 
     QtLLM::ChatDockWidget* m_chatDock = nullptr;
     QtLLM::Client m_client;

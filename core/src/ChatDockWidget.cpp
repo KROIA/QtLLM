@@ -1,5 +1,7 @@
 #include "ChatDockWidget.h"
 #include "InterviewWidget.h"
+#include "ContextUsageBar.h"
+#include <QFrame>
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QEventLoop>
@@ -107,6 +109,27 @@ namespace QtLLM
         m_tokenLabel->setVisible(false);
         mainLayout->addWidget(m_tokenLabel);
 
+        QHBoxLayout* contextRow = new QHBoxLayout();
+        contextRow->setSpacing(4);
+
+        m_contextBar = new ContextUsageBar(m_centralWidget);
+        contextRow->addWidget(m_contextBar, 1);
+
+        m_clearButton = new QPushButton(QString::fromUtf8("\xf0\x9f\x97\x91"), m_centralWidget);
+        m_clearButton->setFixedWidth(28);
+        m_clearButton->setToolTip(
+            "Clear context\n\n"
+            "Wipes the conversation history sent to the model on every request - "
+            "the model \"forgets\" everything said so far (system prompt and tools stay).\n\n"
+            "Use this when:\n"
+            "- the context bar is filling up and responses are getting slow/expensive\n"
+            "- the conversation has drifted off-topic and old messages are just noise\n"
+            "- you're starting a genuinely new task and don't need the old thread\n\n"
+            "Don't use this if you still need the model to recall earlier details in this chat.");
+        contextRow->addWidget(m_clearButton);
+
+        mainLayout->addLayout(contextRow);
+
         auto* inputField = new ChatInputTextEdit(m_centralWidget);
         inputField->setPlaceholderText("Type a message... (Enter = Send, Shift+Enter = New line)");
         inputField->setMaximumHeight(80);
@@ -155,6 +178,7 @@ namespace QtLLM
         connect(m_sendButton, &QPushButton::clicked, this, &ChatDockWidget::onSendClicked);
         connect(m_cancelButton, &QPushButton::clicked, this, &ChatDockWidget::onCancelClicked);
         connect(m_saveButton, &QPushButton::clicked, this, &ChatDockWidget::onSaveClicked);
+        connect(m_clearButton, &QPushButton::clicked, this, &ChatDockWidget::onClearClicked);
         connect(m_settingsButton, &QPushButton::clicked, this, &ChatDockWidget::settingsRequested);
         connect(&m_cancelTimer, &QTimer::timeout, this, &ChatDockWidget::onCancelTimerTimeout);
 
@@ -293,6 +317,11 @@ namespace QtLLM
         m_tokenLabel->setVisible(true);
     }
 
+    void ChatDockWidget::setContextBreakdown(const ContextBreakdown& breakdown)
+    {
+        m_contextBar->setBreakdown(breakdown);
+    }
+
     void ChatDockWidget::clearStatus()
     {
         m_statusLabel->clear();
@@ -350,6 +379,12 @@ namespace QtLLM
                     }
                 }
             });
+
+        connect(m_client, &Client::contextChanged, this, [this]() {
+            if (m_client)
+                setContextBreakdown(m_client->contextBreakdown());
+        });
+        setContextBreakdown(m_client->contextBreakdown());
     }
 
     void ChatDockWidget::onSaveClicked()
@@ -445,6 +480,38 @@ namespace QtLLM
     void ChatDockWidget::onCancelTimerTimeout()
     {
         m_cancelButton->setVisible(true);
+    }
+
+    void ChatDockWidget::onClearClicked()
+    {
+        if (m_client)
+            m_client->clearConversation();
+        addContextClearedMarker();
+        emit clearContextRequested();
+    }
+
+    void ChatDockWidget::addContextClearedMarker()
+    {
+        QWidget* marker = new QWidget();
+        marker->setProperty("qtllm_interview", true);  // opt out of bubble font/width auto-sizing
+        QHBoxLayout* layout = new QHBoxLayout(marker);
+        layout->setContentsMargins(0, 8, 0, 8);
+
+        QFrame* line1 = new QFrame(marker);
+        line1->setFrameShape(QFrame::HLine);
+        line1->setStyleSheet("color: #bbb;");
+        QLabel* label = new QLabel(QString::fromUtf16(u"Context cleared"), marker);
+        label->setStyleSheet("color: #999; font-size: 10px; padding: 0 6px;");
+        QFrame* line2 = new QFrame(marker);
+        line2->setFrameShape(QFrame::HLine);
+        line2->setStyleSheet("color: #bbb;");
+
+        layout->addWidget(line1, 1);
+        layout->addWidget(label);
+        layout->addWidget(line2, 1);
+
+        m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, marker);
+        scrollToBottom();
     }
 
     void ChatDockWidget::resizeEvent(QResizeEvent* event)

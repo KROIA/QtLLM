@@ -14,11 +14,22 @@ OllamaProtocol::OllamaProtocol(const QUrl& url, QObject* parent)
     , m_history()
     , m_transport(new HttpTransport(this))
     , m_modelsTransport(new HttpTransport(this))
+    , m_capabilityTransport(new HttpTransport(this))
 {
+    // Local generation (esp. loading a large model into memory/VRAM on the
+    // first request, or a long prompt with many tool schemas) can easily
+    // exceed the 60s default that's tuned for cloud APIs - Ollama's
+    // non-streaming /api/chat doesn't reply until generation is complete.
+    m_transport->setTimeoutMs(300000);
+
     connect(m_transport, &HttpTransport::replyReceived,
             this, &OllamaProtocol::onReplyReceived);
     connect(m_transport, &HttpTransport::errorOccurred,
             this, &OllamaProtocol::onTransportError);
+    connect(m_capabilityTransport, &HttpTransport::replyReceived,
+            this, &OllamaProtocol::onCapabilityReplyReceived);
+    connect(m_capabilityTransport, &HttpTransport::errorOccurred,
+            this, &OllamaProtocol::onCapabilityTransportError);
     connect(m_modelsTransport, &HttpTransport::replyReceived,
             this, &OllamaProtocol::onModelsReplyReceived);
     connect(m_modelsTransport, &HttpTransport::errorOccurred,
@@ -40,6 +51,11 @@ void OllamaProtocol::setMaxTokens(int maxTokens)
 void OllamaProtocol::setSystemPrompt(const QString& systemPrompt)
 {
     m_systemPrompt = systemPrompt;
+}
+
+void OllamaProtocol::setUrl(const QUrl& url)
+{
+    m_url = url;
 }
 
 void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
@@ -65,6 +81,7 @@ void OllamaProtocol::startNewTurn(const QString& userMessage)
     m_turnOutputTokens = 0;
     m_turnToolCalls    = 0;
     m_turnTimerStarted = false;
+    m_historyLenBeforeTurn = m_history.size();
 
     QJsonObject msg;
     msg["role"]    = "user";
@@ -90,8 +107,15 @@ void OllamaProtocol::sendRequest()
         m_turnTimerStarted = true;
     }
 
+    // m_url is treated as the Ollama server's base URL everywhere else
+    // (fetchModels() rewrites it to /api/tags) - do the same here instead of
+    // trusting the caller to have appended /api/chat themselves, since e.g.
+    // SettingsDialog's Ollama URL field is just the base address.
+    QUrl chatUrl = m_url;
+    chatUrl.setPath("/api/chat");
+
     emit requestStarted();
-    m_transport->post(m_url, bytes, {});
+    m_transport->post(chatUrl, bytes, {});
 }
 
 void OllamaProtocol::clearHistory()
@@ -151,7 +175,9 @@ void OllamaProtocol::onReplyReceived(const QByteArray& data)
 {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
+        rollbackFailedTurn();
         emit errorOccurred("Failed to parse Ollama response");
+        emit requestFinished();
         drainQueue();
         return;
     }
@@ -159,6 +185,7 @@ void OllamaProtocol::onReplyReceived(const QByteArray& data)
     QJsonObject root = doc.object();
 
     if (root.contains("error")) {
+        rollbackFailedTurn();
         emit errorOccurred(root["error"].toString());
         emit requestFinished();
         drainQueue();
@@ -176,11 +203,15 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
 
     QJsonObject message    = responseJson["message"].toObject();
     QJsonArray  toolCalls  = message["tool_calls"].toArray();
+    QString     text       = message["content"].toString();
+
+    if (toolCalls.isEmpty())
+        toolCalls = extractFallbackToolCall(text);
 
     if (!toolCalls.isEmpty()) {
         QJsonObject assistantMsg;
         assistantMsg["role"]       = "assistant";
-        assistantMsg["content"]    = message["content"].toString();
+        assistantMsg["content"]    = text;
         assistantMsg["tool_calls"] = toolCalls;
         m_history.append(assistantMsg);
 
@@ -188,8 +219,6 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
         sendRequest();
         return;
     }
-
-    QString text = message["content"].toString();
 
     QJsonObject assistantMsg;
     assistantMsg["role"]    = "assistant";
@@ -279,15 +308,54 @@ void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
     }
 }
 
+QJsonArray OllamaProtocol::extractFallbackToolCall(const QString& text) const
+{
+    QJsonDocument doc = QJsonDocument::fromJson(text.trimmed().toUtf8());
+    if (!doc.isObject())
+        return {};
+
+    QJsonObject obj = doc.object();
+    QString name = obj["name"].toString();
+    if (name.isEmpty() || !m_toolHandlers.contains(name))
+        return {};
+
+    QJsonObject args = obj.contains("parameters") ? obj["parameters"].toObject()
+                      : obj.contains("arguments")  ? obj["arguments"].toObject()
+                      : QJsonObject();
+
+    QJsonObject function;
+    function["name"]      = name;
+    function["arguments"] = args;
+
+    QJsonObject call;
+    call["function"] = function;
+
+    return QJsonArray{ call };
+}
+
 void OllamaProtocol::onTransportError(const QString& message)
 {
+    rollbackFailedTurn();
     emit errorOccurred(message);
     emit requestFinished();
     drainQueue();
 }
 
+void OllamaProtocol::rollbackFailedTurn()
+{
+    while (m_history.size() > m_historyLenBeforeTurn)
+        m_history.removeAt(m_history.size() - 1);
+}
+
 void OllamaProtocol::fetchModels()
 {
+    // A capability check is a multi-step sequence (one /api/show round trip
+    // per model) - ignore a redundant call while one is already in flight
+    // instead of letting two interleave and corrupt each other's progress.
+    if (m_modelsFetchInProgress)
+        return;
+    m_modelsFetchInProgress = true;
+
     // Ollama tags endpoint: base URL + /api/tags
     QUrl tagsUrl = m_url;
     tagsUrl.setPath("/api/tags");
@@ -298,6 +366,7 @@ void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
 {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
+        m_modelsFetchInProgress = false;
         emit errorOccurred("Failed to parse Ollama models response");
         emit modelsFetched({});
         return;
@@ -305,25 +374,64 @@ void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
 
     QJsonObject root = doc.object();
     if (root.contains("error")) {
+        m_modelsFetchInProgress = false;
         emit errorOccurred(root["error"].toString());
         emit modelsFetched({});
         return;
     }
 
-    QStringList models;
+    m_modelsPendingCapabilityCheck.clear();
     QJsonArray arr = root["models"].toArray();
     for (const QJsonValue& val : arr) {
         QString name = val.toObject()["name"].toString();
         if (!name.isEmpty())
-            models.append(name);
+            m_modelsPendingCapabilityCheck.append(name);
     }
-    emit modelsFetched(models);
+
+    m_toolCapableModels.clear();
+    checkNextModelCapability();
 }
 
 void OllamaProtocol::onModelsTransportError(const QString& message)
 {
+    m_modelsFetchInProgress = false;
     emit errorOccurred(message);
     emit modelsFetched({});
+}
+
+void OllamaProtocol::checkNextModelCapability()
+{
+    if (m_modelsPendingCapabilityCheck.isEmpty()) {
+        m_modelsFetchInProgress = false;
+        emit modelsFetched(m_toolCapableModels);
+        return;
+    }
+
+    m_capabilityCheckModel = m_modelsPendingCapabilityCheck.takeFirst();
+
+    QUrl showUrl = m_url;
+    showUrl.setPath("/api/show");
+    QJsonObject body{{"model", m_capabilityCheckModel}};
+    m_capabilityTransport->post(showUrl, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+void OllamaProtocol::onCapabilityReplyReceived(const QByteArray& data)
+{
+    QJsonObject root = QJsonDocument::fromJson(data).object();
+    for (const QJsonValue& cap : root["capabilities"].toArray()) {
+        if (cap.toString() == QStringLiteral("tools")) {
+            m_toolCapableModels.append(m_capabilityCheckModel);
+            break;
+        }
+    }
+    checkNextModelCapability();
+}
+
+void OllamaProtocol::onCapabilityTransportError(const QString&)
+{
+    // Can't confirm tool support for this model - exclude it rather than
+    // guess, and keep checking the rest.
+    checkNextModelCapability();
 }
 
 } // namespace QtLLM

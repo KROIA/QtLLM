@@ -32,6 +32,11 @@ ChatWindow::ChatWindow(const QString& apiKey,
     : QMainWindow(parent)
     , m_isOllama(false)
     , m_currentModel(model)
+    , m_apiKey(apiKey)
+    , m_endpointUrl(endpointUrl)
+    , m_savedClaudeApiKey(apiKey)
+    , m_savedClaudeEndpointUrl(endpointUrl)
+    , m_savedOllamaUrl(QStringLiteral("http://localhost:11434/api/chat"))
     , m_client(apiKey, endpointUrl, this)
 {
     setWindowTitle("QtLLM Chat");
@@ -59,6 +64,11 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
     : QMainWindow(parent)
     , m_isOllama(provider == QtLLM::Provider::Ollama)
     , m_currentModel(model)
+    , m_apiKey(apiKey)
+    , m_endpointUrl(endpointUrl)
+    , m_savedClaudeApiKey(m_isOllama ? QString() : apiKey)
+    , m_savedClaudeEndpointUrl(m_isOllama ? QStringLiteral("https://api.anthropic.com/v1/messages") : endpointUrl)
+    , m_savedOllamaUrl(m_isOllama ? endpointUrl : QStringLiteral("http://localhost:11434/api/chat"))
     , m_client(provider, endpointUrl, apiKey, this)
 {
     setWindowTitle("QtLLM Chat");
@@ -211,6 +221,8 @@ void ChatWindow::registerTools()
 
 void ChatWindow::connectSignals()
 {
+    m_chatDock->setClient(&m_client);
+
     connect(m_chatDock, &QtLLM::ChatDockWidget::messageSent,    this, &ChatWindow::onSendClicked);
     connect(m_chatDock, &QtLLM::ChatDockWidget::cancelRequested, this, [this]() {
         m_chatDock->setLoading(false);
@@ -236,10 +248,15 @@ void ChatWindow::connectSignals()
         QtLLM::SettingsDialog dlg(this);
         dlg.setModel(m_currentModel);
         dlg.setSystemPrompt(m_systemPrompt);
-        if (m_isOllama)
-            dlg.setProvider(QtLLM::SettingsDialog::Provider::Ollama);
-        else
-            dlg.setProvider(QtLLM::SettingsDialog::Provider::Claude);
+
+        // Populate BOTH providers' fields (not just the active one) so
+        // switching the Provider combo restores whatever was last configured
+        // for the other provider instead of the field's hardcoded default.
+        dlg.setApiKey(m_savedClaudeApiKey);
+        dlg.setEndpointUrl(m_savedClaudeEndpointUrl);
+        dlg.setOllamaUrl(m_savedOllamaUrl);
+        dlg.setProvider(m_isOllama ? QtLLM::SettingsDialog::Provider::Ollama
+                                   : QtLLM::SettingsDialog::Provider::Claude);
         dlg.setFontSizePercent(m_fontSizePercent);
 
         // Wire usage history so the statistics tab shows live data
@@ -248,19 +265,45 @@ void ChatWindow::connectSignals()
         // Tools tab: list registered tools, enable/disable applied on Apply
         dlg.setClient(&m_client);
 
-        // Wire model auto-detection: dialog button -> client fetch -> dialog populate
-        connect(&dlg,      &QtLLM::SettingsDialog::detectModelsRequested,
-                &m_client, &QtLLM::Client::fetchAvailableModels);
-        connect(&m_client, &QtLLM::Client::modelsAvailable,
-                &dlg,      &QtLLM::SettingsDialog::setAvailableModels);
+        // Model fetching is fully self-contained inside SettingsDialog (it
+        // queries whichever provider/credentials are currently typed into
+        // its own fields), so no wiring is needed here. Previously this also
+        // connected detectModelsRequested -> m_client.fetchAvailableModels(),
+        // which always queried the live Client's current (not-yet-applied)
+        // provider and merged its models into the combo alongside the
+        // correct ones.
 
         connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
             m_currentModel = dlg.model();
-            m_client.setModel(dlg.model());
             m_systemPrompt = dlg.systemPrompt();
-            m_client.setSystemPrompt(m_systemPrompt);
             m_fontSizePercent = dlg.fontSizePercent();
             m_chatDock->setFontSizePercent(m_fontSizePercent);
+
+            // Persist both providers' fields in RAM regardless of which is
+            // active, so switching back later restores exactly what was
+            // last configured instead of a hardcoded default.
+            m_savedClaudeApiKey      = dlg.apiKey();
+            m_savedClaudeEndpointUrl = dlg.endpointUrl();
+            m_savedOllamaUrl         = dlg.ollamaUrl();
+
+            bool wantOllama = (dlg.provider() == QtLLM::SettingsDialog::Provider::Ollama);
+            m_endpointUrl = wantOllama ? m_savedOllamaUrl : m_savedClaudeEndpointUrl;
+            m_apiKey      = wantOllama ? QString() : m_savedClaudeApiKey;
+
+            if (wantOllama != m_isOllama) {
+                m_isOllama = wantOllama;
+                m_client.setProvider(wantOllama ? QtLLM::Provider::Ollama : QtLLM::Provider::Claude,
+                                     m_endpointUrl, m_apiKey);
+                m_chatDock->clearMessages();
+            } else if (wantOllama) {
+                m_client.setEndpointUrl(m_endpointUrl);
+            } else {
+                m_client.setApiKey(m_apiKey);
+                m_client.setEndpointUrl(m_endpointUrl);
+            }
+
+            m_client.setModel(m_currentModel);
+            m_client.setSystemPrompt(m_systemPrompt);
         });
         dlg.exec();
     });

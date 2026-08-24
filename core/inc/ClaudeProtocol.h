@@ -26,6 +26,12 @@ public:
     void setMaxTokens(int maxTokens) override;
     void setSystemPrompt(const QString& systemPrompt) override;
 
+    // Changing these after construction was previously impossible - Settings
+    // dialogs that let the user edit the API key / endpoint had no way to
+    // actually apply the change. Takes effect on the next request.
+    void setApiKey(const QString& apiKey);
+    void setUrl(const QUrl& url);
+
     // Called by Client when tool registration changes
     void setTools(const QList<QJsonObject>& toolSchemas,
                   const QMap<QString, ToolHandler>& handlers) override;
@@ -52,6 +58,22 @@ private:
     void        processResponse(const QJsonObject& responseJson);
     void        executeToolCalls(const QJsonArray& toolUseBlocks);
     QString     assembleText(const QJsonArray& content) const;
+    // Some models routed through a non-Anthropic gateway/proxy don't reliably
+    // emit a real tool_use content block and instead end the turn with the
+    // call serialized as plain JSON text (e.g.
+    // {"name":"setWindowTitle","parameters":{"title":"..."}}). Recognizes
+    // that shape - only when "name" matches an actually registered tool - and
+    // returns it reshaped as a standard tool_use content block array; empty
+    // if it doesn't match.
+    QJsonArray  extractFallbackToolUse(const QString& text) const;
+    // Discards any history entries appended since the current turn started
+    // (the initial user message, plus any tool_use/tool_result round trips).
+    // Called on every hard failure so a dangling, never-answered user/tool
+    // entry doesn't corrupt the next request - Anthropic's Messages API
+    // requires strictly alternating user/assistant roles, and a leftover
+    // unanswered entry there previously broke (or silently hung) the very
+    // next send.
+    void        rollbackFailedTurn();
 
     QString                    m_apiKey;
     QUrl                       m_url;
@@ -67,6 +89,7 @@ private:
     // Turn serialization queue
     bool           m_turnInProgress{false};
     QQueue<QString> m_pendingTurns;
+    int            m_historyLenBeforeTurn = 0;
 
     // Tool-use loop guard
     static constexpr int kMaxToolIterations = 25;
