@@ -6,7 +6,7 @@ All public types live in the `QtLLM` namespace. Include the umbrella header:
 #include <QtLLM.h>
 ```
 
-Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
+Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [AgentsWidget](#qtllmagentswidget) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
 
 ---
 
@@ -237,6 +237,22 @@ Process-wide list of live agents. Agents add themselves on construction and remo
 | `agents()` | Live agents, in spawn order |
 | `agentSpawned(Agent*)` | Signal: an agent was constructed |
 | `agentDestroyed(QString name)` | Signal: an agent was destroyed |
+
+---
+
+## `QtLLM::AgentsWidget`
+
+Read-only `QWidget` listing every live [`Agent`](#qtllmagent) in the process: name, provider and **effective** model, state, queue depth, turns, tokens in/out, cost, and uptime, with a detail pane for the selected agent's endpoint, token and cost caps, enabled tools, system prompt, and last prompt/reply/error.
+
+```cpp
+auto* widget = new QtLLM::AgentsWidget(this);   // that is the entire setup
+```
+
+It binds to `AgentRegistry::instance()` itself, so it needs no wiring and no client — construct it anywhere and every agent in the process appears. [`SettingsDialog`](#qtllmsettingsdialog) already embeds one as its **Agents** tab; construct your own only if you want the list somewhere else, such as a docked debug panel.
+
+The table rebuilds once a second so uptime and in-flight counters keep moving, and immediately on `agentSpawned` / `agentDestroyed`. Selection survives a rebuild, so the detail pane does not jump while it is being read.
+
+There are no kill or pause controls, on purpose: the application owns its agents, and a widget deleting an object the app still holds a pointer to is a crash waiting to happen. Delete the agent yourself and the row disappears.
 
 ---
 
