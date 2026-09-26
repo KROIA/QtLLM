@@ -36,8 +36,16 @@ QString PricingRegistry::normalizeModel(const QString& model)
 
 ModelPricing PricingRegistry::builtinPricing(const QString& m)
 {
-    // USD per 1M tokens; approximate as of mid-2025. Last-resort fallback —
-    // fetchOnlinePricing()/setPricing() take precedence.
+    // USD per 1M tokens; Anthropic list prices as of 2026-06. Last-resort
+    // fallback — fetchOnlinePricing()/setPricing() take precedence.
+    if (m.contains("fable-5")
+        || m.contains("mythos-5")) return {10.0,  50.0, -1.0, -1.0};
+    if (m.contains("opus-5"))    return { 5.0,  25.0, -1.0, -1.0};
+    if (m.contains("opus-4-8")
+        || m.contains("opus-4-7")
+        || m.contains("opus-4-6")) return { 5.0,  25.0, -1.0, -1.0};
+    if (m.contains("sonnet-5"))  return { 2.0,  10.0, -1.0, -1.0};
+    if (m.contains("haiku-4-5")) return { 1.0,   5.0, -1.0, -1.0};
     if (m.contains("opus-4"))    return {15.0,  75.0, -1.0, -1.0};
     if (m.contains("sonnet-4"))  return { 3.0,  15.0, -1.0, -1.0};
     if (m.contains("haiku-4"))   return { 0.80,  4.0, -1.0, -1.0};

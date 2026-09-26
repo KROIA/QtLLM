@@ -11,6 +11,9 @@
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+    // QSettings scope for persisted user settings.
+    QCoreApplication::setOrganizationName("QtLLM");
+    QCoreApplication::setApplicationName("LibraryExample");
 	QtLLM::Profiler::start();
     Log::UI::createConsoleView(Log::UI::ConsoleViewType::nativeConsoleView);
 

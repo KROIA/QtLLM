@@ -62,6 +62,13 @@ private:
         TEST_COMPARE(p.inputPerMTok, 0.25);
         TEST_COMPARE(p.outputPerMTok, 1.25);
 
+        // current generation
+        TEST_COMPARE(reg.pricingFor("claude-opus-5").inputPerMTok,   5.0);
+        TEST_COMPARE(reg.pricingFor("claude-opus-5").outputPerMTok, 25.0);
+        TEST_COMPARE(reg.pricingFor("claude-sonnet-5").inputPerMTok, 2.0);
+        TEST_COMPARE(reg.pricingFor("claude-haiku-4-5").inputPerMTok, 1.0);
+        TEST_COMPARE(reg.pricingFor("claude-fable-5-1").outputPerMTok, 50.0);
+
         TEST_ASSERT(!reg.pricingFor("totally-unknown-model").isValid());
     }
 
