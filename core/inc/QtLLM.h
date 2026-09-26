@@ -19,11 +19,14 @@
 #include "Tool.h"
 #include "ToolResult.h"
 #include "Client.h"
+#include "Agent.h"
+#include "AgentRegistry.h"
 #include "OllamaManager.h"
 #include "ChatDockWidget.h"
 #include "InterviewWidget.h"
 #include "InterviewTool.h"
 #include "BuiltinTools.h"
 #include "SettingsDialog.h"
+#include "AgentsWidget.h"
 
 /// USER_SECTION_END

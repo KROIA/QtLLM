@@ -13,6 +13,7 @@
 #include <QPixmap>
 #include <QFileDialog>
 #include <QJsonDocument>
+#include <QToolButton>
 #include <QFile>
 #include <QDateTime>
 #include "Client.h"
@@ -337,6 +338,7 @@ namespace QtLLM
                 delete item->widget();
             delete item;
         }
+        m_pendingToolCards.clear();
     }
 
     void ChatDockWidget::setAssistantName(const QString& name)
@@ -363,6 +365,11 @@ namespace QtLLM
     {
         if (m_toolStatusConn)
             disconnect(m_toolStatusConn);
+        if (m_toolDebugInvokedConn)
+            disconnect(m_toolDebugInvokedConn);
+        if (m_toolDebugCompletedConn)
+            disconnect(m_toolDebugCompletedConn);
+        m_pendingToolCards.clear();
         m_client = client;
         if (!m_client)
             return;
@@ -380,11 +387,112 @@ namespace QtLLM
                 }
             });
 
+        // Debug tool-call cards. Always connected; the flag gates rendering so
+        // toggling the setting needs no re-wiring.
+        m_toolDebugInvokedConn = connect(m_client, &Client::toolInvoked, this,
+            [this](const QString& toolName, const QJsonObject& input) {
+                if (m_showToolCalls)
+                    addToolCallCard(toolName, input);
+            });
+        m_toolDebugCompletedConn = connect(m_client, &Client::toolCompleted, this,
+            [this](const QString& toolName, const QJsonObject& result) {
+                if (m_showToolCalls)
+                    completeToolCallCard(toolName, result);
+            });
+
         connect(m_client, &Client::contextChanged, this, [this]() {
             if (m_client)
                 setContextBreakdown(m_client->contextBreakdown());
         });
         setContextBreakdown(m_client->contextBreakdown());
+    }
+
+    void ChatDockWidget::setShowToolCalls(bool show)
+    {
+        m_showToolCalls = show;
+    }
+
+    bool ChatDockWidget::showToolCalls() const
+    {
+        return m_showToolCalls;
+    }
+
+    static QString jsonBlock(const QJsonObject& obj)
+    {
+        return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Indented))
+            .toHtmlEscaped();
+    }
+
+    void ChatDockWidget::addToolCallCard(const QString& toolName, const QJsonObject& input)
+    {
+        QString description;
+        if (m_client) {
+            for (const Tool& tool : m_client->registeredTools()) {
+                if (tool.name() == toolName) {
+                    description = tool.description();
+                    break;
+                }
+            }
+        }
+
+        QWidget* card = new QWidget();
+        QVBoxLayout* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(4, 2, 4, 2);
+        cardLayout->setSpacing(0);
+
+        QToolButton* header = new QToolButton(card);
+        header->setCheckable(true);
+        header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        header->setArrowType(Qt::RightArrow);
+        header->setText(QStringLiteral("tool: %1").arg(toolName));
+        header->setStyleSheet("QToolButton { border: none; color: #666; }");
+
+        QLabel* details = new QLabel(card);
+        details->setTextFormat(Qt::RichText);
+        details->setWordWrap(true);
+        details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        details->setVisible(false);
+        details->setStyleSheet(
+            "background-color: #F4F4F4; border-left: 3px solid #BBB; padding: 6px; color: #333;");
+        details->setProperty("toolName", toolName);
+        details->setProperty("toolDescription", description);
+        details->setProperty("toolInput", QString::fromUtf8(
+            QJsonDocument(input).toJson(QJsonDocument::Compact)));
+        details->setText(QString("<b>%1</b><br/>%2<pre>%3</pre><i>running...</i>")
+            .arg(toolName.toHtmlEscaped(), description.toHtmlEscaped(), jsonBlock(input)));
+
+        connect(header, &QToolButton::toggled, details, [header, details](bool on) {
+            details->setVisible(on);
+            header->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        });
+
+        cardLayout->addWidget(header, 0, Qt::AlignLeft);
+        cardLayout->addWidget(details);
+
+        m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, card);
+        m_pendingToolCards[toolName].append(QPointer<QLabel>(details));
+        scrollToBottom();
+    }
+
+    void ChatDockWidget::completeToolCallCard(const QString& toolName, const QJsonObject& result)
+    {
+        auto it = m_pendingToolCards.find(toolName);
+        if (it == m_pendingToolCards.end())
+            return;
+        while (!it->isEmpty()) {
+            QPointer<QLabel> details = it->takeFirst();
+            if (!details)
+                continue;   // card was destroyed (e.g. clearMessages)
+            details->setText(QString("<b>%1</b><br/>%2<pre>%3</pre><b>Result</b><pre>%4</pre>")
+                .arg(toolName.toHtmlEscaped(),
+                     details->property("toolDescription").toString().toHtmlEscaped(),
+                     jsonBlock(QJsonDocument::fromJson(
+                         details->property("toolInput").toString().toUtf8()).object()),
+                     jsonBlock(result)));
+            break;
+        }
+        if (it->isEmpty())
+            m_pendingToolCards.erase(it);
     }
 
     void ChatDockWidget::onSaveClicked()
@@ -452,20 +560,36 @@ namespace QtLLM
 
     void ChatDockWidget::onSendClicked()
     {
-        QString text = m_inputField->toPlainText().trimmed();
-        if (text.isEmpty())
-            return;
+        submitPrompt(m_inputField->toPlainText());
+    }
+
+    bool ChatDockWidget::submitPrompt(const QString& text)
+    {
+        const QString trimmed = text.trimmed();
+        if (trimmed.isEmpty())
+            return false;
 
         if (m_isLoading) {
             m_inputField->setToolTip(m_busyWarningText);
             QToolTip::showText(m_inputField->mapToGlobal(QPoint(0, -30)),
                 m_busyWarningText, m_inputField, QRect(), 2000);
-            return;
+            return false;
         }
 
-        addUserMessage(text);
-        emit messageSent(text);
+        addUserMessage(trimmed);
+        emit messageSent(trimmed);
         m_inputField->clear();
+        return true;
+    }
+
+    void ChatDockWidget::setInputText(const QString& text)
+    {
+        m_inputField->setPlainText(text);
+    }
+
+    QString ChatDockWidget::inputText() const
+    {
+        return m_inputField->toPlainText();
     }
 
     void ChatDockWidget::onCancelClicked()

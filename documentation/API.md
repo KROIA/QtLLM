@@ -6,7 +6,7 @@ All public types live in the `QtLLM` namespace. Include the umbrella header:
 #include <QtLLM.h>
 ```
 
-Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
+Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
 
 ---
 
@@ -49,6 +49,7 @@ explicit Client(Provider provider,
 | Method | Description |
 |---|---|
 | `setModel(QString)` | Model identifier. Provider-specific (e.g. `"claude-sonnet-4-5"` or `"llama3.2"`) |
+| `model()` | The model requests actually go out with. Not necessarily the one you set — a model the provider does not offer is replaced automatically |
 | `setMaxTokens(int)` | Maximum tokens in the response. Maps to `num_predict` for Ollama |
 | `setSystemPrompt(QString)` | Prepended to every request. Omitted when empty. May be changed mid-conversation — history is kept, takes effect from the next request (invalidates the prompt-cache prefix) |
 
@@ -105,6 +106,7 @@ Execution order per tool call: **call cap → validation → consent → handler
 |---|---|
 | `usageStats()` | `UsageStats` snapshot from the most recently completed turn |
 | `usageHistory()` | Pointer to the persistent per-turn [`UsageHistory`](#qtllmusagehistory) (JSONL-backed) |
+| `setUsageAppTag(QString)` / `usageAppTag()` | Producer name recorded in `UsageSample::app`. Defaults to the application name; [`Agent`](#qtllmagent) sets `"agent:<name>"` so background spend is separable in the usage charts |
 | `fetchAvailableModels()` | Async model list from the current provider; results via `modelsAvailable()` |
 
 ### Signals
@@ -119,7 +121,122 @@ Execution order per tool call: **call cap → validation → consent → handler
 | `requestFinished()` | Turn fully resolved (success or error) |
 | `statsUpdated(UsageStats stats)` | Once per completed turn with token counts, timing, and cost |
 | `modelsAvailable(QStringList models)` | Result of `fetchAvailableModels()` |
+| `modelChanged(QString model)` | The active model changed — including the automatic correction when the provider does not offer the configured one. Connect this to keep your own model UI honest |
 | `toolCallLimitReached(int limit)` | Once per turn when the tool-call cap is exceeded |
+
+---
+
+## `QtLLM::Agent`
+
+A headless conversation the user never sees. `Agent` **is** a `Client` — the entire `Client` API above applies unchanged, including `registerTool()`, `setToolEnabled()`, `BuiltinTools::registerTools()`, `exportConversation()`, and every signal. On top of that it adds spawn-time configuration, a queued request/callback call style, a spend cap, and automatic registration in [`AgentRegistry`](#qtllmagentregistry).
+
+Use it for work that should not appear in the chat: classifying input, analysing data, summarising application state. Provider and model are chosen per agent, so a cheap local Ollama model can serve simple tasks while a remote Claude model handles the hard ones.
+
+```cpp
+QtLLM::AgentConfig config;
+config.name         = "log-classifier";
+config.provider     = QtLLM::Provider::Ollama;   // local, no API key needed
+config.model        = "llama3.2";
+config.systemPrompt = "Classify log lines as INFO, WARN or CRITICAL. Reply with one word.";
+config.costCapUsd   = 0.50;
+
+auto* agent = new QtLLM::Agent(config, this);    // spawns; appears in the Agents tab
+QtLLM::BuiltinTools::registerTools(agent, { QtLLM::BuiltinTool::ReadTextFile });
+
+agent->ask("disk usage at 97% on /var", [](const QString& reply, bool ok) {
+    if (ok) qDebug() << "classified as" << reply;
+});
+
+delete agent;   // kills it; pending callbacks are dropped, not invoked
+```
+
+### `QtLLM::AgentConfig`
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | *(generated)* | Shown in the Agents tab. An empty name gets `"agent-N"` so the registry never holds an unidentifiable entry |
+| `provider` | `Provider::Ollama` | Backend for this agent |
+| `url` | *(provider default)* | Endpoint; empty means `http://localhost:11434/api/chat` or `https://api.anthropic.com/v1/messages` |
+| `apiKey` | *(empty)* | Ignored for Ollama |
+| `model` | *(empty)* | Preferred model identifier |
+| `fallbackModels` | *(empty)* | Tried in order when the provider does not offer `model` |
+| `systemPrompt` | *(empty)* | Omitted when empty |
+| `maxTokens` | `1024` | Response cap |
+| `costCapUsd` | `0.0` | Spend cap; `0` = unlimited |
+
+### Lifetime
+
+Constructing spawns, `delete` (or `deleteLater()`) kills. There is deliberately no `kill()` method — Qt object ownership already is the lifetime, and a second mechanism could only disagree with it. Destroying an agent mid-request is safe: the network stack is a child of the `Client` and is torn down with it, and no pending callback fires afterwards.
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `ask(QString prompt, AskCallback done)` | Queue a turn. `done(text, ok)` runs on the GUI thread when it resolves; `ok == false` means `text` holds the reason. History persists across calls — call `clearConversation()` to forget |
+| `config()` | The `AgentConfig` in effect, with generated name and resolved URL filled in |
+| `state()` | `Idle`, `Starting`, `Busy`, `Error`, or `BudgetExceeded` |
+| `queuedPrompts()` | Prompts waiting behind the in-flight turn |
+| `spentUsd()` / `completedTurns()` / `spawnedAtMs()` | Running totals for display |
+| `lastPrompt()` / `lastReply()` / `lastError()` | Most recent values, shown in the Agents tab |
+
+Calls are served strictly in order. A `Client` holds one history and permits one in-flight turn, so a second `ask()` waits rather than being rejected — background callers have no good way to coordinate among themselves.
+
+### Signals
+
+| Signal | When emitted |
+|---|---|
+| `stateChanged(Agent::State state)` | Any state transition |
+| `budgetExceeded(double spentUsd)` | Once, when spend passes `costCapUsd` |
+
+### Model resolution and fallbacks
+
+An agent typically fires its first task within milliseconds of being spawned, long before it could know what the endpoint offers. Sending straight away is how a configured-but-retired model turns into `"Model not found"` on the very first task.
+
+So an agent sends nothing until the provider has answered with its model list. Until then it reports `State::Starting` and holds the queue. Once the list arrives:
+
+1. If the provider offers `config.model`, it is kept.
+2. Otherwise `config.fallbackModels` is walked in order and the first one the provider offers wins.
+3. If no candidate matches, the provider's first model is used — an agent running on an unexpected model still beats one that cannot run.
+4. If the list comes back **empty**, the fetch failed rather than the provider being empty. Guessing from no information would be worse than trying what was configured, so the configured model is kept and the queue is released.
+
+Any replacement emits `Client::modelChanged(QString)`, and `model()` returns what is actually in use — `config().model` still holds what you asked for, so comparing the two tells you a fallback happened.
+
+```cpp
+config.model          = "claude-sonnet-4-6";
+config.fallbackModels = { "claude-sonnet-4-5", "claude-haiku-4-5" };
+
+connect(agent, &QtLLM::Client::modelChanged, this, [agent](const QString& effective) {
+    qWarning() << agent->config().model << "unavailable, running on" << effective;
+});
+```
+
+Failures that are not about the model — auth, rate limits, timeouts, malformed replies — are reported to the `ask()` callback with `ok == false` and through `Client::errorOccurred()`. They do **not** trigger a model switch, and they do not discard the rest of the queue; the next task is dispatched as usual. Deciding what to do about them is the application's call.
+
+### Budget cap
+
+`costCapUsd` is a **soft cap**. Token cost is only known once a turn completes and `statsUpdated()` fires, so the cap refuses *further* sends rather than preventing the overrun that tripped it. On exceeding, the agent enters `State::BudgetExceeded` and drains its queue, invoking every pending callback with `ok == false`.
+
+The cap exists because an agent nobody is watching is the one that quietly runs up a bill.
+
+### Tool safety
+
+Tool policy needs no agent-specific API: `registerTool()` and `setToolEnabled()` already express which tools an agent may use. Two defaults protect the invisible case:
+
+- Tools that can only complete by putting something in front of the user — `ask_user_question`, `file_dialog`, `message_box`, `color_picker`, and the repeating-task trio — are **denied by default**, because a dialog raised on a background agent's behalf appears with nothing to explain where it came from. Install your own `setToolConsentHandler()` to override.
+- Everything else behaves exactly as on a normal `Client`.
+
+---
+
+## `QtLLM::AgentRegistry`
+
+Process-wide list of live agents. Agents add themselves on construction and remove themselves on destruction, so applications never call into it — it exists so [`SettingsDialog`](#qtllmsettingsdialog) can show every agent without the app wiring anything up.
+
+| Member | Description |
+|---|---|
+| `AgentRegistry::instance()` | The singleton |
+| `agents()` | Live agents, in spawn order |
+| `agentSpawned(Agent*)` | Signal: an agent was constructed |
+| `agentDestroyed(QString name)` | Signal: an agent was destroyed |
 
 ---
 
@@ -274,6 +391,8 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 | Method | Description |
 |---|---|
 | `addUserMessage(QString)` / `addAssistantMessage(QString)` | Append a bubble (local only — no API call) |
+| `submitPrompt(QString)` | Inject a prompt as if the user had typed it and pressed Send: renders the user bubble and emits `messageSent()`. Returns `false` and sends nothing when the text is blank or a response is in flight |
+| `setInputText(QString)` / `inputText()` | Prefill the input field without sending, so the user can edit a suggestion and send it themselves |
 | `clearMessages()` | Remove all bubbles |
 | `addInterviewWidget(QJsonObject request)` | Insert an interview card (non-blocking); result via `interviewFinished()` |
 | `execInterview(QJsonObject request)` | Blocking convenience for tool handlers: local event loop until submit/skip. Returns the result; `{"status":"cancelled"}` if the widget dies while waiting. GUI thread only |
@@ -296,7 +415,7 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 
 | Signal | When emitted |
 |---|---|
-| `messageSent(QString)` | User pressed Send |
+| `messageSent(QString)` | User pressed Send, or `submitPrompt()` injected a prompt |
 | `cancelRequested()` | User pressed Cancel |
 | `settingsRequested()` | User clicked the settings button |
 | `saveConversationRequested()` | Save clicked and **no** client bound (fallback for custom handling) |
@@ -306,7 +425,9 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 
 ## `QtLLM::SettingsDialog`
 
-Ready-made settings dialog (`QDialog`) with three tabs: **Settings** (provider, API key, endpoint, model incl. auto-detection, system prompt, font size), **Tools**, **Statistik** (usage charts).
+Ready-made settings dialog (`QDialog`) with five tabs: **Settings** (provider, API key, endpoint, model incl. auto-detection, system prompt, font size), **Tools**, **Statistik** (usage charts), **Context**, and **Agents**.
+
+The **Agents** tab is a read-only view of every live [`Agent`](#qtllmagent) in the process — name, provider/model, state, queue depth, turns, tokens, cost, and uptime, with a detail pane for the selected agent's system prompt, enabled tools, and last prompt/reply/error. It binds to `AgentRegistry` itself, so it needs no wiring. It has no kill or pause controls on purpose: the application owns its agents, and a dialog deleting an object the app still holds is a crash waiting to happen.
 
 | Method | Description |
 |---|---|
@@ -350,7 +471,7 @@ struct UsageStats {
 
 ### Cost estimation (Claude only)
 
-Cost is resolved through the [`PricingRegistry`](#qtllmpricingregistry) across all token categories (input, output, cache read ≈ 10 % of input, cache write ≈ 125 %). Without any configuration a hard-coded approximate table (mid-2025) is used; call `PricingRegistry::instance().fetchOnlinePricing()` at startup or inject your own prices for accurate numbers. It is always an estimate — Anthropic has no billing/pricing API; verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
+Cost is resolved through the [`PricingRegistry`](#qtllmpricingregistry) across all token categories (input, output, cache read ≈ 10 % of input, cache write ≈ 125 %). The first `Client` triggers `fetchOnlinePricing()` automatically (disk cache, weekly refresh); until it returns, a hard-coded table (Anthropic list prices, 2026-06) is used. Inject your own prices to override either. It is always an estimate — Anthropic has no billing/pricing API; verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
 
 ---
 

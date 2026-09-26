@@ -9,6 +9,9 @@
 #include <QLabel>
 #include <QTimer>
 #include <QJsonObject>
+#include <QHash>
+#include <QList>
+#include <QPointer>
 #include "UsageStats.h"
 
 namespace QtLLM
@@ -27,6 +30,18 @@ namespace QtLLM
         void addUserMessage(const QString& message);
         void addAssistantMessage(const QString& message);
 
+        // Places a prompt into the conversation exactly as if the user had
+        // typed it and pressed Send: the user bubble is rendered and
+        // messageSent() is emitted, so apps already connected to that signal
+        // need no extra wiring. Returns false and sends nothing when the text
+        // is blank or a response is still in flight.
+        bool submitPrompt(const QString& text);
+
+        // Prefills the input field without sending, letting the user edit the
+        // suggested text and send it themselves.
+        void setInputText(const QString& text);
+        QString inputText() const;
+
         // Insert an interactive interview card into the conversation
         // (non-blocking). See InterviewWidget for the request format.
         // Emits interviewFinished() when the user submits or skips.
@@ -37,6 +52,12 @@ namespace QtLLM
         // skips. Returns the interview result; {"status":"cancelled"} if the
         // widget is destroyed while waiting. GUI thread only.
         QJsonObject execInterview(const QJsonObject& request);
+
+        // Debug aid: render every tool call as a collapsed card in the
+        // conversation (tool name, description, parameters, result).
+        // Requires setClient(). Off by default.
+        void setShowToolCalls(bool show);
+        bool showToolCalls() const;
 
         void setLoading(bool loading);
         void setStatusText(const QString& text);
@@ -97,6 +118,8 @@ namespace QtLLM
         void scrollToBottom();
         void updateBubbleWidths();
         QWidget* createMessageBubble(const QString& text, bool isUser);
+        void addToolCallCard(const QString& toolName, const QJsonObject& input);
+        void completeToolCallCard(const QString& toolName, const QJsonObject& result);
         void addContextClearedMarker();
 
         QWidget* m_centralWidget = nullptr;
@@ -111,6 +134,12 @@ namespace QtLLM
         QPushButton* m_clearButton = nullptr;
         Client* m_client = nullptr;  // optional conversation source for built-in Save
         QMetaObject::Connection m_toolStatusConn;  // auto statusText on toolInvoked
+        QMetaObject::Connection m_toolDebugInvokedConn;
+        QMetaObject::Connection m_toolDebugCompletedConn;
+        bool m_showToolCalls = false;
+        // Cards still waiting for their result, keyed by tool name. Parallel
+        // calls to the same tool resolve oldest-first.
+        QHash<QString, QList<QPointer<QLabel>>> m_pendingToolCards;
         QLabel* m_loadingLabel = nullptr;
         QLabel* m_statusLabel = nullptr;
         QLabel* m_tokenLabel = nullptr;

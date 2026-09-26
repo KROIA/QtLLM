@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QTimer>
 #include <QJsonObject>
+#include <functional>
 
 class ChatWindow : public QMainWindow
 {
@@ -40,9 +41,20 @@ private slots:
 
 private:
     void buildUi();
+    QWidget* buildAgentDemoPanel();
     void registerTools();
     void connectSignals();
     void initOllamaIfNeeded();
+
+    // Background-agent demo. The agent is spawned on first use and lives until
+    // the Kill button (or this window) destroys it, so it shows up in
+    // Settings > Agents while it exists.
+    QtLLM::Agent* demoAgent();
+    void runAgentTask(const QString& label,
+                      const QString& prompt,
+                      std::function<void(const QString&)> onSuccess = nullptr);
+    void logAgent(const QString& line);
+    void updateAgentStatus();
 
     bool         m_isOllama = false;
     QString      m_currentModel;
@@ -60,6 +72,13 @@ private:
 
     QtLLM::ChatDockWidget* m_chatDock = nullptr;
     QtLLM::Client m_client;
+
+    // Agent demo panel
+    QString       m_lastAssistantReply;
+    QtLLM::Agent* m_demoAgent   = nullptr;
+    QTextEdit*    m_agentLog    = nullptr;
+    QLabel*       m_agentStatus = nullptr;
+    QPushButton*  m_killAgentBtn = nullptr;
 
     // Model bar (top, Ollama only)
     QComboBox*   m_modelCombo  = nullptr;

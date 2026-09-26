@@ -56,6 +56,9 @@ public:
 
     // Model ID string; provider-specific (e.g. "claude-sonnet-4-5" or "llama3.2").
     void setModel(const QString& model);
+    // The model requests actually go out with. Not necessarily the one that was
+    // set: validateCurrentModel() replaces a model the provider does not offer.
+    QString model() const;
     // Caps response length; maps to num_predict for Ollama.
     void setMaxTokens(int maxTokens);
     // Injected as first message each request; empty = omitted.
@@ -151,6 +154,13 @@ public:
     // Persistent per-turn usage history (JSONL-backed).
     UsageHistory* usageHistory();
 
+    // Identifies the producer of recorded usage samples, i.e. UsageSample::app.
+    // Defaults to QCoreApplication::applicationName(). Agent sets it to
+    // "agent:<name>" so background spend is separable from chat spend in the
+    // usage statistics, which already filter by this field.
+    void setUsageAppTag(const QString& tag);
+    QString usageAppTag() const;
+
     // Asynchronously fetch available models from the current provider.
     // Results arrive via modelsAvailable().
     void fetchAvailableModels();
@@ -176,6 +186,10 @@ signals:
     void statsUpdated(const QtLLM::UsageStats& stats);
     // Emitted when fetchAvailableModels() completes.
     void modelsAvailable(const QStringList& models);
+    // Emitted whenever the active model actually changes, including the
+    // automatic correction applied when the provider does not offer the
+    // configured one. Lets an app keep its own UI in step with reality.
+    void modelChanged(const QString& model);
     // Emitted once per turn when setMaxToolCallsPerTurn() is exceeded.
     void toolCallLimitReached(int limit);
     // Emitted whenever anything feeding contextBreakdown() changes (system
@@ -222,6 +236,7 @@ private:
     QString                       m_currentModel;
     QString                       m_currentProvider;
     QString                       m_systemPrompt;
+    QString                       m_usageAppTag;   // empty = fall back to the application name
     ToolConsentHandler            m_consentHandler;
     ContextWindowResolver         m_contextWindowResolver;
     bool                          m_validateToolInput = false;

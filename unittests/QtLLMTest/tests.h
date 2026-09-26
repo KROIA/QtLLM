@@ -10,3 +10,5 @@
 #include "tests/TST_Client.h"
 #include "tests/TST_Provider.h"
 #include "tests/TST_OllamaProtocol.h"
+#include "tests/TST_Agent.h"
+#include "tests/TST_ChatDockWidget.h"

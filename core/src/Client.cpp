@@ -54,6 +54,14 @@ Client::~Client() = default;
 
 void Client::connectProtocol()
 {
+    // Keep cost estimates current without the app having to ask. Cheap: the
+    // disk cache is reused and the network is only hit once a week.
+    static bool pricingFetchStarted = false;
+    if (!pricingFetchStarted) {
+        pricingFetchStarted = true;
+        PricingRegistry::instance().fetchOnlinePricing();
+    }
+
     // responseReady goes through a slot so we can update m_history first
     connect(m_protocol, &ProtocolBase::responseReady,   this, &Client::onProtocolResponseReady);
     connect(m_protocol, &ProtocolBase::statsReady,      this, &Client::onProtocolStatsReady);
@@ -120,7 +128,19 @@ void Client::onProtocolError(const QString& errorMessage)
     emit contextChanged();
 }
 
-void Client::setModel(const QString& model)       { m_currentModel = model; m_protocol->setModel(model); }
+void Client::setModel(const QString& model)
+{
+    const bool changed = (m_currentModel != model);
+    m_currentModel = model;
+    m_protocol->setModel(model);
+    // Emitted for every change, including the silent self-correction in
+    // validateCurrentModel() — without this an application has no way to learn
+    // which model its requests are actually going out with.
+    if (changed)
+        emit modelChanged(m_currentModel);
+}
+
+QString Client::model() const                     { return m_currentModel; }
 void Client::setMaxTokens(int maxTokens)           { m_protocol->setMaxTokens(maxTokens); }
 void Client::setSystemPrompt(const QString& p)     { m_systemPrompt = p; m_protocol->setSystemPrompt(p); emit contextChanged(); }
 
@@ -551,6 +571,19 @@ UsageHistory* Client::usageHistory()
     return m_usageHistory;
 }
 
+void Client::setUsageAppTag(const QString& tag)
+{
+    m_usageAppTag = tag;
+}
+
+QString Client::usageAppTag() const
+{
+    if (!m_usageAppTag.isEmpty())
+        return m_usageAppTag;
+    const QString appName = QCoreApplication::applicationName();
+    return appName.isEmpty() ? QStringLiteral("unknown") : appName;
+}
+
 void Client::fetchAvailableModels()
 {
     m_protocol->fetchModels();
@@ -562,8 +595,7 @@ void Client::recordSample(const UsageStats& stats)
     sample.timestampMsEpoch         = QDateTime::currentMSecsSinceEpoch();
     sample.model                    = m_currentModel;
     sample.provider                 = m_currentProvider;
-    QString appName = QCoreApplication::applicationName();
-    sample.app                      = appName.isEmpty() ? QStringLiteral("unknown") : appName;
+    sample.app                      = usageAppTag();
     sample.inputTokens              = stats.inputTokens;
     sample.outputTokens             = stats.outputTokens;
     sample.cacheReadInputTokens     = stats.cacheReadInputTokens;

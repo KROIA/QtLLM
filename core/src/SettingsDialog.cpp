@@ -4,6 +4,7 @@
 #include "Client.h"
 #include "Tool.h"
 #include "ContextUsageBar.h"
+#include "AgentsWidget.h"
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
 #include <QVBoxLayout>
@@ -83,6 +84,13 @@ namespace QtLLM
         m_fontSizeSpinBox->setSingleStep(10);
         formLayout->addRow(m_fontSizeLabel, m_fontSizeSpinBox);
 
+        m_showToolCallsCheck = new QCheckBox(
+            QString::fromUtf16(u"Tool-Calls im Chat anzeigen"), settingsPage);
+        m_showToolCallsCheck->setToolTip(QString::fromUtf16(
+            u"Debug: zeigt jeden Tool-Call als aufklappbare Karte im Chat "
+            u"(Name, Beschreibung, Parameter, Ergebnis)."));
+        formLayout->addRow("Debug:", m_showToolCallsCheck);
+
         settingsLayout->addLayout(formLayout, 1);
         settingsLayout->addStretch();
 
@@ -120,6 +128,12 @@ namespace QtLLM
         contextLayout->addStretch();
 
         m_tabWidget->addTab(contextPage, "Context");
+
+        // ---- Agents tab ----
+        // Binds to the global AgentRegistry, so it lists every background agent
+        // in the process without the host app wiring anything up.
+        m_agentsWidget = new AgentsWidget(this);
+        m_tabWidget->addTab(m_agentsWidget, "Agents");
 
         mainLayout->addWidget(m_tabWidget, 1);
 
@@ -340,6 +354,7 @@ namespace QtLLM
     QString SettingsDialog::ollamaUrl() const { return m_ollamaUrlEdit->text(); }
     QString SettingsDialog::systemPrompt() const { return m_systemPromptEdit->toPlainText(); }
     int SettingsDialog::fontSizePercent() const { return m_fontSizeSpinBox->value(); }
+    bool SettingsDialog::showToolCalls() const { return m_showToolCallsCheck->isChecked(); }
 
     void SettingsDialog::setProvider(Provider provider) { m_providerCombo->setCurrentIndex(static_cast<int>(provider)); }
     void SettingsDialog::setApiKey(const QString& key) { m_apiKeyEdit->setText(key); }
@@ -348,6 +363,8 @@ namespace QtLLM
     void SettingsDialog::setOllamaUrl(const QString& url) { m_ollamaUrlEdit->setText(url); }
     void SettingsDialog::setSystemPrompt(const QString& prompt) { m_systemPromptEdit->setPlainText(prompt); }
     void SettingsDialog::setFontSizePercent(int percent) { m_fontSizeSpinBox->setValue(percent); }
+
+    void SettingsDialog::setShowToolCalls(bool show) { m_showToolCallsCheck->setChecked(show); }
 
     void SettingsDialog::setFontSizeLabel(const QString& text) { m_fontSizeLabel->setText(text); }
 

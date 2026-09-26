@@ -23,6 +23,7 @@ namespace QtLLM
     class UsageStatsWidget;
     class ContextUsageBar;
     class ProtocolBase;
+    class AgentsWidget;
 
     class QT_LLM_API SettingsDialog : public QDialog
     {
@@ -43,6 +44,8 @@ namespace QtLLM
         QString ollamaUrl() const;
         QString systemPrompt() const;
         int fontSizePercent() const;
+        // Debug option: render tool calls as collapsible cards in the chat.
+        bool showToolCalls() const;
 
         void setProvider(Provider provider);
         void setApiKey(const QString& key);
@@ -51,6 +54,7 @@ namespace QtLLM
         void setOllamaUrl(const QString& url);
         void setSystemPrompt(const QString& prompt);
         void setFontSizePercent(int percent);
+        void setShowToolCalls(bool show);
 
         void setFontSizeLabel(const QString& text);
 
@@ -100,6 +104,7 @@ namespace QtLLM
         QLineEdit*   m_ollamaUrlEdit = nullptr;
         QTextEdit* m_systemPromptEdit = nullptr;
         QSpinBox* m_fontSizeSpinBox = nullptr;
+        QCheckBox* m_showToolCallsCheck = nullptr;
         QDialogButtonBox* m_buttonBox = nullptr;
 
         QLabel* m_apiKeyLabel = nullptr;
@@ -109,6 +114,7 @@ namespace QtLLM
 
         QTabWidget*       m_tabWidget = nullptr;
         UsageStatsWidget* m_statsWidget = nullptr;
+        AgentsWidget*     m_agentsWidget = nullptr;
         ContextUsageBar*  m_contextBar = nullptr;
         QLabel*           m_contextDetailsLabel = nullptr;
 
