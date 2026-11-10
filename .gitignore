@@ -43,6 +43,8 @@ doxygen
 out
 include
 lib
+graphify-out
+.claude
 
 # Claude Code — per-machine settings, not shared.
 # Permission grants are a per-developer trust decision; each clone makes its own.
