@@ -24,6 +24,23 @@
 
 namespace QtLLM
 {
+    namespace
+    {
+        struct ProviderEntry
+        {
+            SettingsDialog::Provider provider;
+            const char*              text;
+        };
+        const ProviderEntry kProviders[] = {
+            {SettingsDialog::Provider::Claude, "Claude (Anthropic API key)"},
+            {SettingsDialog::Provider::Ollama, "Ollama (local models)"},
+            {SettingsDialog::Provider::Foundry, "Microsoft Foundry (Claude)"},
+            {SettingsDialog::Provider::ClaudeSubscription, "Claude subscription (Claude Code login)"},
+            {SettingsDialog::Provider::OpenAICompatible,
+             "OpenAI-compatible server (LM Studio, llama.cpp, vLLM, ...)"},
+        };
+    }
+
     SettingsDialog::SettingsDialog(QWidget* parent)
         : QDialog(parent)
     {
@@ -48,6 +65,7 @@ namespace QtLLM
         QWidget* settingsPage = new QWidget(this);
         QVBoxLayout* settingsLayout = new QVBoxLayout(settingsPage);
         QFormLayout* formLayout = new QFormLayout();
+        m_formLayout = formLayout;
 
         m_providerCombo = new QComboBox(settingsPage);
         m_providerCombo->addItem("Claude (Anthropic API key)", int(Provider::Claude));
@@ -108,6 +126,14 @@ namespace QtLLM
         modelRow->addWidget(m_modelCombo, 1);
         modelRow->addWidget(m_detectModelsBtn);
         formLayout->addRow("Model:", modelRow);
+
+        // Shown when Apply is refused because of the model.
+        m_modelHintLabel = new QLabel(settingsPage);
+        m_modelHintLabel->setObjectName("qtllm_modelHint");
+        m_modelHintLabel->setWordWrap(true);
+        m_modelHintLabel->setStyleSheet("color: #c0392b;");
+        m_modelHintLabel->setVisible(false);
+        formLayout->addRow(QString(), m_modelHintLabel);
 
         m_effortCombo = new QComboBox(settingsPage);
         m_effortCombo->addItem("Model default", int(Effort::Default));
@@ -300,19 +326,146 @@ namespace QtLLM
         m_openAiUrlEdit->setVisible(isOpenAi);
         m_openAiKeyLabel->setVisible(isOpenAi);
         m_openAiKeyEdit->setVisible(isOpenAi);
+
+        // An endpoint the application fixed: the address is shown but cannot
+        // be changed, and the key is not shown at all. (Only the current
+        // provider's fields are visible, so all of them can be set alike.)
+        const bool fixed = !providerPolicy(p).endpointEditable;
+        for (QLineEdit* url : {m_endpointUrlEdit, m_foundryUrlEdit, m_ollamaUrlEdit, m_openAiUrlEdit})
+            url->setEnabled(!fixed);
+        if (fixed) {
+            for (QWidget* key : QList<QWidget*>{m_apiKeyLabel, m_apiKeyEdit, m_foundryKeyLabel,
+                                                m_foundryKeyEdit, m_openAiKeyLabel, m_openAiKeyEdit})
+                key->setVisible(false);
+        }
+
+        // Single fields the application locked or took out.
+        for (Field field : {Field::Provider, Field::Effort, Field::SystemPrompt, Field::FontSize,
+                            Field::ShowToolCalls}) {
+            QWidget* widget = fieldWidget(field);
+            const bool hidden = m_hiddenFields.contains(int(field));
+            const bool locked = m_lockedFields.contains(int(field));
+            widget->setVisible(!hidden);
+            if (QWidget* label = m_formLayout->labelForField(widget))
+                label->setVisible(!hidden);
+            if (field == Field::SystemPrompt)
+                m_systemPromptEdit->setReadOnly(locked);   // still readable and scrollable
+            else if (field == Field::Provider)
+                widget->setEnabled(!locked && m_providerCombo->count() > 1);
+            else
+                widget->setEnabled(!locked);
+        }
+    }
+
+    QWidget* SettingsDialog::fieldWidget(Field field) const
+    {
+        switch (field) {
+        case Field::Provider:      return m_providerCombo;
+        case Field::Effort:        return m_effortCombo;
+        case Field::SystemPrompt:  return m_systemPromptEdit;
+        case Field::FontSize:      return m_fontSizeSpinBox;
+        case Field::ShowToolCalls: break;
+        }
+        return m_showToolCallsCheck;
+    }
+
+    void SettingsDialog::setFieldEditable(Field field, bool editable)
+    {
+        if (editable)
+            m_lockedFields.remove(int(field));
+        else
+            m_lockedFields.insert(int(field));
+        updateFieldVisibility();
+    }
+
+    void SettingsDialog::setFieldVisible(Field field, bool visible)
+    {
+        if (visible)
+            m_hiddenFields.remove(int(field));
+        else
+            m_hiddenFields.insert(int(field));
+        updateFieldVisibility();
+    }
+
+    void SettingsDialog::setProviderPolicy(Provider provider, const ProviderPolicy& policy)
+    {
+        m_policies[int(provider)] = policy;
+        applyPolicies();
+    }
+
+    SettingsDialog::ProviderPolicy SettingsDialog::providerPolicy(Provider provider) const
+    {
+        return m_policies.value(int(provider));
+    }
+
+    bool SettingsDialog::isModelAllowed(Provider provider, const QString& model) const
+    {
+        const ProviderPolicy policy = providerPolicy(provider);
+        return (policy.allowedModels.isEmpty() || Client::modelMatches(model, policy.allowedModels))
+            && !Client::modelMatches(model, policy.blockedModels);
+    }
+
+    void SettingsDialog::applyPolicies()
+    {
+        // The Provider box holds the offered providers only: a hidden entry
+        // could still be reached with the arrow keys.
+        const Provider before = provider();
+        {
+            QSignalBlocker blocker(m_providerCombo);
+            m_providerCombo->clear();
+            for (const ProviderEntry& entry : kProviders) {
+                if (providerPolicy(entry.provider).offered)
+                    m_providerCombo->addItem(QString::fromLatin1(entry.text), int(entry.provider));
+            }
+            const int index = m_providerCombo->findData(int(before));
+            m_providerCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        if (m_providerCombo->count() > 0 && provider() != before) {
+            onProviderChanged(m_providerCombo->currentIndex());   // as if the user had switched
+            return;
+        }
+        updateFieldVisibility();
+        enforceModelPolicy();
+    }
+
+    void SettingsDialog::enforceModelPolicy()
+    {
+        const Provider p = provider();
+        const ProviderPolicy policy = providerPolicy(p);
+        QString current = m_modelCombo->currentText();
+
+        for (int i = m_modelCombo->count() - 1; i >= 0; --i) {
+            if (!isModelAllowed(p, m_modelCombo->itemText(i)))
+                m_modelCombo->removeItem(i);
+        }
+        // With a whitelist the user chooses from the list and cannot type a
+        // name of their own.
+        const bool pickOnly = !policy.allowedModels.isEmpty();
+        if (m_modelCombo->isEditable() == pickOnly)
+            m_modelCombo->setEditable(!pickOnly);
+        if (pickOnly) {
+            // Entries without wildcards are real names: they can be offered
+            // before the provider's own list is in, or when it has none.
+            for (const QString& name : policy.allowedModels) {
+                if (!name.contains(QLatin1Char('*')) && !name.contains(QLatin1Char('?'))
+                    && isModelAllowed(p, name) && m_modelCombo->findText(name) < 0)
+                    m_modelCombo->addItem(name);
+            }
+        }
+        if (policy.modelEditable && !isModelAllowed(p, current))
+            current = m_modelCombo->count() > 0 ? m_modelCombo->itemText(0) : QString();
+        setModel(current);
+
+        m_modelCombo->setEnabled(policy.modelEditable);
+        m_detectModelsBtn->setEnabled(policy.modelEditable);
+        m_modelHintLabel->setVisible(false);
     }
 
     void SettingsDialog::setAvailableProviders(const QList<Provider>& providers)
     {
-        auto* view = qobject_cast<QListView*>(m_providerCombo->view());
-        for (int row = 0; row < m_providerCombo->count(); ++row) {
-            const bool offered = providers.contains(static_cast<Provider>(m_providerCombo->itemData(row).toInt()));
-            if (view)
-                view->setRowHidden(row, !offered);
-        }
-        // Never leave a provider selected that is not offered.
-        if (!providers.isEmpty() && !providers.contains(provider()))
-            m_providerCombo->setCurrentIndex(m_providerCombo->findData(int(providers.first())));
+        for (const ProviderEntry& entry : kProviders)
+            m_policies[int(entry.provider)].offered = providers.contains(entry.provider);
+        applyPolicies();
     }
 
     void SettingsDialog::refreshSubscriptionStatus()
@@ -364,6 +517,7 @@ namespace QtLLM
         }
 
         updateFieldVisibility();
+        enforceModelPolicy();
         emit detectModelsRequested();  // back-compat: apps may still react to this
         fetchModelsForCurrentProvider();
     }
@@ -412,6 +566,16 @@ namespace QtLLM
 
     void SettingsDialog::onApply()
     {
+        // A typed model the application does not allow: nothing is applied.
+        if (providerPolicy(provider()).modelEditable && !isModelAllowed(provider(), model())) {
+            m_modelHintLabel->setText(model().isEmpty()
+                ? tr("Choose a model.")
+                : tr("The model \"%1\" is not available in this application.").arg(model()));
+            m_modelHintLabel->setVisible(true);
+            m_tabWidget->setCurrentIndex(0);
+            return;
+        }
+        m_modelHintLabel->setVisible(false);
         applyToolToggles();
         emit settingsApplied();
         accept();
@@ -533,6 +697,9 @@ namespace QtLLM
             client->setApiKey(key);
             client->setEndpointUrl(url);
         }
+        // The client enforces the same model rules the dialog applied.
+        const ProviderPolicy modelPolicy = providerPolicy(provider());
+        client->setModelFilter(modelPolicy.allowedModels, modelPolicy.blockedModels);
         client->setModel(model());
         client->setSystemPrompt(systemPrompt());
         client->setEffort(effort());
@@ -577,12 +744,29 @@ namespace QtLLM
     {
         // Programmatic selection only restores state: unlike a user changing
         // the combo it must not reset the model field to that provider's default.
+        const int index = m_providerCombo->findData(int(provider));
+        if (index < 0)
+            return;   // not offered by the application
         QSignalBlocker blocker(m_providerCombo);
-        m_providerCombo->setCurrentIndex(m_providerCombo->findData(int(provider)));
+        m_providerCombo->setCurrentIndex(index);
         updateFieldVisibility();
+        enforceModelPolicy();
     }
     void SettingsDialog::setApiKey(const QString& key) { m_apiKeyEdit->setText(key); }
-    void SettingsDialog::setModel(const QString& model) { m_modelCombo->setEditText(model); }
+    void SettingsDialog::setModel(const QString& model)
+    {
+        // A saved model that is no longer allowed is not put back.
+        if (!model.isEmpty() && providerPolicy(provider()).modelEditable
+            && !isModelAllowed(provider(), model))
+            return;
+        if (m_modelCombo->isEditable()) {
+            m_modelCombo->setEditText(model);
+            return;
+        }
+        if (!model.isEmpty() && m_modelCombo->findText(model) < 0)
+            m_modelCombo->addItem(model);
+        m_modelCombo->setCurrentText(model);
+    }
     void SettingsDialog::setEndpointUrl(const QString& url) { m_endpointUrlEdit->setText(url); }
     void SettingsDialog::setOllamaUrl(const QString& url) { m_ollamaUrlEdit->setText(url); }
     void SettingsDialog::setOpenAiUrl(const QString& url) { m_openAiUrlEdit->setText(url); }
@@ -600,13 +784,25 @@ namespace QtLLM
             m_statsWidget->setUsageHistory(history);
     }
 
-    void SettingsDialog::setAvailableModels(const QStringList& models)
+    void SettingsDialog::setAvailableModels(const QStringList& fetched)
     {
         QString current = m_modelCombo->currentText();
+        // Only what the application allows for this provider.
+        QStringList models;
+        for (const QString& name : fetched) {
+            if (isModelAllowed(provider(), name))
+                models.append(name);
+        }
         // Add models not already present
         for (const QString& m : models) {
             if (m_modelCombo->findText(m) < 0)
                 m_modelCombo->addItem(m);
+        }
+        // A fixed model stays what the application set (adding the first item
+        // to an empty box selects it, so it has to be put back).
+        if (!providerPolicy(provider()).modelEditable) {
+            setModel(current);
+            return;
         }
 
         // The current text is often just a hardcoded guess (set on provider
@@ -616,6 +812,6 @@ namespace QtLLM
         if (!models.isEmpty() && !models.contains(current))
             current = models.first();
 
-        m_modelCombo->setEditText(current);
+        setModel(current);
     }
 }

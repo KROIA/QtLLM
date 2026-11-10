@@ -12,6 +12,7 @@
 #include <QPushButton>
 #include <QPointer>
 #include <QMap>
+#include <QSet>
 #include "ProtocolBase.h"
 #include "Client.h"
 
@@ -41,9 +42,42 @@ namespace QtLLM
             OpenAICompatible    // LM Studio, llama.cpp, vLLM, ... (OpenAI Chat Completions API)
         };
 
-        // Which providers the user can choose from. All by default; an
-        // application that, say, must stay local offers only those.
+        // ---- What the user may change ---------------------------------------
+        // The application decides, per provider, whether it is offered, whether
+        // the user may change where requests go, and which models may be used.
+        // Values are set with the usual setters (setFoundryEndpointUrl(),
+        // setModel(), ...); the policy says what the user may do with them.
+        struct ProviderPolicy
+        {
+            // false: not in the Provider box.
+            bool offered = true;
+            // false: endpoint and API key belong to the application. The
+            // address is shown greyed out, the key is not shown at all.
+            bool endpointEditable = true;
+            // false: the model is fixed to what setModel() gave.
+            bool modelEditable = true;
+            // Model names with * and ? wildcards, case-insensitive. A model
+            // must match allowedModels (when not empty) and must not match
+            // blockedModels. With a whitelist the user picks from a list and
+            // cannot type a name; applyTo() hands both lists to the client
+            // (Client::setModelFilter), which enforces them.
+            QStringList allowedModels;
+            QStringList blockedModels;
+        };
+        void setProviderPolicy(Provider provider, const ProviderPolicy& policy);
+        ProviderPolicy providerPolicy(Provider provider) const;
+        bool isModelAllowed(Provider provider, const QString& model) const;
+
+        // Shorthand for ProviderPolicy::offered: exactly these are offered.
+        // With a single one the Provider box is locked.
         void setAvailableProviders(const QList<Provider>& providers);
+
+        // Single fields of the Settings tab: shown but locked, or not shown.
+        // (Endpoint, key and model are per provider - see ProviderPolicy; the
+        // other tabs: setTabVisible(); tools: Client::setToolUserConfigurable().)
+        enum class Field { Provider, Effort, SystemPrompt, FontSize, ShowToolCalls };
+        void setFieldEditable(Field field, bool editable);
+        void setFieldVisible(Field field, bool visible);
 
         explicit SettingsDialog(QWidget* parent = nullptr);
         ~SettingsDialog();
@@ -127,6 +161,9 @@ namespace QtLLM
     private:
         void setupUI();
         void updateFieldVisibility();
+        void applyPolicies();
+        void enforceModelPolicy();
+        QWidget* fieldWidget(Field field) const;
         void refreshToolsTab();
         void applyToolToggles();
         void refreshContextTab();
@@ -181,5 +218,10 @@ namespace QtLLM
         QPointer<Client>          m_client;
         QPointer<ProtocolBase>    m_modelFetchProtocol;  // throwaway, see fetchModelsForCurrentProvider()
         ToolSettingsWidget*       m_toolSettings = nullptr;
+        QFormLayout*              m_formLayout = nullptr;
+        QLabel*                   m_modelHintLabel = nullptr;
+        QMap<int, ProviderPolicy> m_policies;       // by Provider
+        QSet<int>                 m_lockedFields;   // by Field
+        QSet<int>                 m_hiddenFields;
     };
 }

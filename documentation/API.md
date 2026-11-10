@@ -816,9 +816,45 @@ Everything optional is a switch the application sets in code; nothing below is o
 | Agents talking to each other | `AgentConfig::messaging` per agent; `registerAgentMessagingTools(client)` for the chat |
 | Built-in tools | the list passed to `BuiltinTools::registerTools()` |
 | Chat: pictures, regenerate / edit, load | `ChatDockWidget::setImageInputEnabled`, `setRegenerateEnabled`, `setLoadButtonVisible` |
-| Settings dialog tabs, providers | `SettingsDialog::setTabVisible(Tab, bool)`, `setAvailableProviders(list)` |
+| Settings dialog: tabs, providers, endpoints, models, fields | `SettingsDialog::setTabVisible`, `setAvailableProviders`, `setProviderPolicy`, `setFieldEditable`, `setFieldVisible` |
+| Models that may be used at all | `Client::setModelFilter(allowed, blocked)` |
 | Agents tab history | `AgentsWidget::setHistoryVisible(bool)` |
 | Streaming, parallel tool calls, cost limit | `Client::setStreamingEnabled`, `setParallelToolCalls`, `setCostLimitUsd` |
+
+### What the user may change in the settings dialog
+
+The application sets the values with the usual setters and states, per provider, what the user may do with them:
+
+```cpp
+QtLLM::SettingsDialog dlg(this);
+dlg.setAvailableProviders({P::Foundry, P::Ollama});       // the only sources on offer
+
+QtLLM::SettingsDialog::ProviderPolicy foundry;
+foundry.endpointEditable = false;                          // address shown greyed out, key not shown
+foundry.allowedModels    = QStringList{"claude-sonnet-*", "claude-haiku-*"};   // whitelist
+dlg.setFoundryEndpointUrl(companyEndpoint);
+dlg.setFoundryApiKey(companyKey);
+dlg.setProviderPolicy(P::Foundry, foundry);
+
+QtLLM::SettingsDialog::ProviderPolicy ollama;
+ollama.blockedModels = QStringList{"*:70b", "*:120b"};                // blacklist
+dlg.setProviderPolicy(P::Ollama, ollama);
+
+dlg.setFieldEditable(QtLLM::SettingsDialog::Field::SystemPrompt, false);   // readable, not changeable
+dlg.setFieldVisible(QtLLM::SettingsDialog::Field::ShowToolCalls, false);
+```
+
+| `ProviderPolicy` | Effect |
+|---|---|
+| `offered = false` | The provider is not in the Provider box (`setAvailableProviders()` is the shorthand). With one provider left the box is locked |
+| `endpointEditable = false` | Endpoint and key are the application's: the address is shown greyed out, the key field is hidden |
+| `modelEditable = false` | The model is fixed to what `setModel()` gave |
+| `allowedModels` | Whitelist, `*` and `?` wildcards, case-insensitive. The user picks from a list and cannot type a name |
+| `blockedModels` | Blacklist. Wins over the whitelist. A blocked name typed by the user is refused on Apply |
+
+`applyTo(client)` hands the model rules of the chosen provider to the client, which enforces them everywhere - not only in the dialog: `Client::setModelFilter(allowed, blocked)` makes `setModel()` ignore a model that is not allowed, `modelsAvailable()` list only allowed ones, the automatic fallback choose among those, and `sendPrompt()` refuse to send with a forbidden model. An application without the dialog calls `setModelFilter()` itself. Subagents started through `run_subagent` inherit the chat's filter; agents the application creates get their own.
+
+Fields (`Provider`, `Effort`, `SystemPrompt`, `FontSize`, `ShowToolCalls`) are locked with `setFieldEditable(field, false)` or removed with `setFieldVisible(field, false)`; whole tabs with `setTabVisible()`.
 
 ### Who decides about a tool
 

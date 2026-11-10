@@ -128,6 +128,19 @@ public:
     // The model requests actually go out with. Not necessarily the one that was
     // set: validateCurrentModel() replaces a model the provider does not offer.
     QString model() const;
+
+    // Which models may be used at all. Patterns are model names with * and ?
+    // wildcards, case-insensitive: a model must match `allowed` (when that is
+    // not empty) and must not match `blocked`. Enforced everywhere: setModel()
+    // ignores a model that is not allowed, modelsAvailable() lists only
+    // allowed ones, the automatic fallback picks among those, and sendPrompt()
+    // refuses to send with a model that is not allowed.
+    void setModelFilter(const QStringList& allowed, const QStringList& blocked = QStringList());
+    QStringList allowedModels() const { return m_allowedModels; }
+    QStringList blockedModels() const { return m_blockedModels; }
+    bool isModelAllowed(const QString& model) const;
+    // True when `model` matches one of the wildcard patterns.
+    static bool modelMatches(const QString& model, const QStringList& patterns);
     // Caps response length; maps to num_predict for Ollama.
     void setMaxTokens(int maxTokens);
     // Injected as first message each request; empty = omitted.
@@ -477,6 +490,7 @@ private:
     QHash<QString, bool>          m_toolConfigurablePolicy, m_groupConfigurablePolicy;
     QHash<QString, bool>          m_toolDeferredPolicy, m_groupDeferredPolicy;
     QList<QImage>                 m_attachedImages;
+    QStringList                   m_allowedModels, m_blockedModels;
     double                        m_costLimitUsd = 0.0;
     bool                          m_parallelToolCalls = true;
     QJsonArray                    m_history;

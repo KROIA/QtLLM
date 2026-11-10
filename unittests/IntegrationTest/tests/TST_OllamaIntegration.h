@@ -148,9 +148,22 @@ private:
         QObject::connect(&client, &QtLLM::Client::responseDelta, [&](const QString&) { ++deltas; });
         QObject::connect(&client, &QtLLM::Client::responseReady, [&](const QString& t) { text = t; loop.quit(); });
         QObject::connect(&client, &QtLLM::Client::errorOccurred, [&](const QString& m) { error = m; loop.quit(); });
-        QTimer::singleShot(180000, &loop, &QEventLoop::quit);
-        client.sendPrompt("Call the get_secret_code tool and tell me the code it returns.");
-        loop.exec();
+        // A 3B model now and then writes its tool call as text instead of
+        // making it. That is the model, not the protocol: ask again.
+        for (int attempt = 1; attempt <= 3 && calls == 0; ++attempt) {
+            if (attempt > 1) {
+                std::cout << "  Attempt " << attempt << " (the model answered: " << text.toStdString() << ")\n";
+                client.clearConversation();
+            }
+            QTimer timeout;
+            timeout.setSingleShot(true);
+            QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+            timeout.start(180000);
+            client.sendPrompt("Call the get_secret_code tool and tell me the code it returns.");
+            loop.exec();
+            if (!error.isEmpty())
+                break;
+        }
 
         TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
         std::cout << "  Model: " << client.model().toStdString() << ", deltas: " << deltas

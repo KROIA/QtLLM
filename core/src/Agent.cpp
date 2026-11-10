@@ -569,6 +569,8 @@ void registerSubagentTool(Client* client,
         if (!name.isEmpty())
             config.name = name;
         auto* agent = new Agent(config, owner);
+        // What the application allows the chat, it allows its helpers.
+        agent->setModelFilter(owner->allowedModels(), owner->blockedModels());
         if (shareTools) {
             // Not the messaging tools either: their handlers speak in the
             // owner's name. An agent gets its own through AgentConfig::messaging.

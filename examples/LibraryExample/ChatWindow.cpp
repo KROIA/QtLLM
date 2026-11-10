@@ -56,6 +56,10 @@ ChatWindow::ChatWindow(const QString& apiKey,
     , m_savedClaudeApiKey(apiKey)
     , m_savedClaudeEndpointUrl(endpointUrl)
     , m_savedOllamaUrl(QStringLiteral("http://localhost:11434/api/chat"))
+    // main() starts this window on the Foundry endpoint from the environment.
+    , m_savedFoundryApiKey(apiKey)
+    , m_savedFoundryUrl(endpointUrl)
+    , m_settingsProvider(QtLLM::SettingsDialog::Provider::Foundry)
     , m_client(apiKey, endpointUrl, this)
 {
     setWindowTitle("QtLLM Chat");
@@ -967,6 +971,25 @@ void ChatWindow::openSettings()
     dlg.setFoundryEndpointUrl(m_savedFoundryUrl);
     dlg.setOpenAiUrl(m_savedOpenAiUrl);
     dlg.setOpenAiApiKey(m_savedOpenAiKey);
+
+    // ---- What the user may change in this dialog ---------------------------
+    // The application decides per provider. Here:
+    //  - Foundry: the endpoint comes from the environment the application was
+    //    started with, so the user sees it but cannot change it (and never
+    //    sees the key); only Sonnet and Haiku models may be chosen.
+    //  - Ollama: free, except that models too large for a desktop are blocked.
+    //  - Every other provider: all the user's own business.
+    // setAvailableProviders() would take providers out of the list entirely.
+    using Policy = QtLLM::SettingsDialog::ProviderPolicy;
+    if (!m_savedFoundryUrl.isEmpty()) {
+        Policy foundry;
+        foundry.endpointEditable = false;
+        foundry.allowedModels    = QStringList{"claude-sonnet-*", "claude-haiku-*"};
+        dlg.setProviderPolicy(QtLLM::SettingsDialog::Provider::Foundry, foundry);
+    }
+    Policy ollama;
+    ollama.blockedModels = QStringList{"*:70b", "*:120b"};
+    dlg.setProviderPolicy(QtLLM::SettingsDialog::Provider::Ollama, ollama);
     dlg.setProvider(m_settingsProvider);
     dlg.setModel(m_currentModel);   // setProvider() reset the model field
     dlg.setFontSizePercent(m_fontSizePercent);

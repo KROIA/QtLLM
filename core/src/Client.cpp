@@ -265,7 +265,16 @@ void Client::connectProtocol()
     connect(m_protocol, &ProtocolBase::errorOccurred,   this, &Client::onProtocolError);
     connect(m_protocol, &ProtocolBase::requestStarted,  this, &Client::requestStarted);
     connect(m_protocol, &ProtocolBase::requestFinished, this, &Client::requestFinished);
-    connect(m_protocol, &ProtocolBase::modelsFetched,   this, &Client::modelsAvailable);
+    // Only what the application allows is passed on - to the settings
+    // dialog, to the automatic fallback, to an agent's model resolution.
+    connect(m_protocol, &ProtocolBase::modelsFetched, this, [this](const QStringList& models) {
+        QStringList allowed;
+        for (const QString& name : models) {
+            if (isModelAllowed(name))
+                allowed.append(name);
+        }
+        emit modelsAvailable(allowed);
+    });
 
     if (m_contextInfoProvider) {
         connect(m_contextInfoProvider, &ContextInfoProvider::contextWindowTokensReady, this, &Client::onContextWindowTokensReady);
@@ -352,8 +361,47 @@ void Client::onProtocolError(const QString& errorMessage)
     emit contextChanged();
 }
 
+bool Client::modelMatches(const QString& model, const QStringList& patterns)
+{
+    for (const QString& pattern : patterns) {
+        // Not QRegularExpression::wildcardToRegularExpression(): that one is
+        // for file paths, where * stops at a '/', and model names have those
+        // ("hf.co/user/model:tag").
+        QString expression = QRegularExpression::escape(pattern);
+        expression.replace(QStringLiteral("\\*"), QStringLiteral(".*"));
+        expression.replace(QStringLiteral("\\?"), QStringLiteral("."));
+        const QRegularExpression regex(QRegularExpression::anchoredPattern(expression),
+                                       QRegularExpression::CaseInsensitiveOption);
+        if (regex.match(model).hasMatch())
+            return true;
+    }
+    return false;
+}
+
+bool Client::isModelAllowed(const QString& model) const
+{
+    return (m_allowedModels.isEmpty() || modelMatches(model, m_allowedModels))
+        && !modelMatches(model, m_blockedModels);
+}
+
+void Client::setModelFilter(const QStringList& allowed, const QStringList& blocked)
+{
+    if (m_allowedModels == allowed && m_blockedModels == blocked)
+        return;
+    m_allowedModels = allowed;
+    m_blockedModels = blocked;
+    // The model in use may have just become one that is not allowed; the
+    // provider's list (filtered) picks a replacement.
+    if (!isModelAllowed(m_currentModel))
+        fetchAvailableModels();
+}
+
 void Client::setModel(const QString& model)
 {
+    if (!isModelAllowed(model)) {
+        qWarning() << "QtLLM: model" << model << "is not allowed by the model filter - ignored";
+        return;
+    }
     const bool changed = (m_currentModel != model);
     m_currentModel = model;
     m_protocol->setModel(model);
@@ -1048,6 +1096,11 @@ void Client::sendPrompt(const QString& userMessage, const QList<QImage>& promptI
                                           "($%2 spent). Start a new conversation to continue.")
                                .arg(m_costLimitUsd, 0, 'f', 2)
                                .arg(m_lastStats.sessionCostUsd, 0, 'f', 2));
+        return;
+    }
+    if (!isModelAllowed(m_currentModel)) {
+        emit errorOccurred(QStringLiteral("The model \"%1\" may not be used in this application. "
+                                          "Choose another one in the settings.").arg(m_currentModel));
         return;
     }
     if (!pictures.isEmpty() && !m_protocol->supportsImageInput()) {

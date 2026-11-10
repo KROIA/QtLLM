@@ -25,3 +25,4 @@
 #include "tests/TST_OpenAiProtocol.h"
 #include "tests/TST_HarnessFeatures.h"
 #include "tests/TST_AgentMessaging.h"
+#include "tests/TST_SettingsPolicy.h"
