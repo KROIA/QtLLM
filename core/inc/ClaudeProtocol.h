@@ -33,6 +33,9 @@ public:
     // actually apply the change. Takes effect on the next request.
     void setApiKey(const QString& apiKey);
     void setUrl(const QUrl& url);
+    // When set, requests carry "Authorization: Bearer <token>" from the
+    // provider instead of x-api-key, and no API key is needed.
+    void setAccessTokenProvider(AccessTokenProvider provider);
 
     // Called by Client when tool registration changes
     void setTools(const QList<QJsonObject>& toolSchemas,
@@ -118,6 +121,9 @@ private:
     // statistics) is one code path.
     void handleStreamEvent(const QString& event, const QJsonObject& data);
     void resetStreamState();
+    // The credential header for the next request: x-api-key, or the bearer
+    // token when an AccessTokenProvider is set. Empty name: none available.
+    QPair<QByteArray, QByteArray> authHeader() const;
 
     QByteArray             m_streamBuffer;        // bytes of a not yet complete event
     bool                   m_streamSniffed = false;
@@ -135,6 +141,7 @@ private:
     QStringList            m_invalidToolInputs;
 
     QString                    m_apiKey;
+    AccessTokenProvider        m_accessTokenProvider;
     QUrl                       m_url;
     QString                    m_model;
     int                        m_maxTokens;

@@ -233,6 +233,24 @@ void Client::createProtocol(Provider provider, const QString& url, const QString
         m_currentProvider = "claude";
         break;
     }
+    applyAccessTokenProvider();
+}
+
+void Client::applyAccessTokenProvider()
+{
+    if (auto* claude = qobject_cast<ClaudeProtocol*>(m_protocol)) {
+        claude->setAccessTokenProvider(m_accessTokenProvider);
+        if (auto* claudeInfo = qobject_cast<ClaudeContextInfoProvider*>(m_contextInfoProvider))
+            claudeInfo->setAccessTokenProvider(m_accessTokenProvider);
+    } else if (auto* openAi = qobject_cast<OpenAiProtocol*>(m_protocol)) {
+        openAi->setAccessTokenProvider(m_accessTokenProvider);
+    }
+}
+
+void Client::setAccessTokenProvider(AccessTokenProvider provider)
+{
+    m_accessTokenProvider = std::move(provider);
+    applyAccessTokenProvider();
 }
 
 void Client::connectProtocol()

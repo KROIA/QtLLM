@@ -107,6 +107,14 @@ cmake --preset x64-Debug -DFETCHCONTENT_SOURCE_DIR_SCRIPTHOST="C:/path/to/Script
 | `QtLLMTest` | EXE | Unit tests (no network) |
 | `IntegrationTest` | EXE | Live API tests |
 
+`IntegrationTest` skips what it has no credentials for. The OAuth2 sign-in test
+(`TST_OAuth2Integration`) opens the browser and runs only when these are set:
+`QTLLM_OAUTH_ISSUER`, `QTLLM_OAUTH_CLIENT_ID`, `QTLLM_OAUTH_REDIRECT_URI`, optionally
+`QTLLM_OAUTH_SCOPES` (space separated), `QTLLM_OAUTH_API_URL` (Messages endpoint
+behind the proxy; without it only the sign-in is tested), `QTLLM_OAUTH_MODEL` and
+`QTLLM_OAUTH_TOKEN_STORE` (file to keep the tokens in: a second run then signs in
+without the browser).
+
 ---
 
 ## Linking Against the Library

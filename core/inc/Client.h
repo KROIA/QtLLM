@@ -163,6 +163,14 @@ public:
     void setApiKey(const QString& apiKey);
     void setEndpointUrl(const QString& url);
 
+    // Sign requests with a user's bearer token instead of an API key, for a
+    // gateway behind an OAuth2 proxy that swaps the token for the real key
+    // (see OAuth2Session::accessTokenProvider()). Asked before every request;
+    // an empty token fails the request with "Not signed in". Applies to the
+    // Claude and OpenAI providers and survives setProvider(). Pass an empty
+    // provider to go back to the API key.
+    void setAccessTokenProvider(AccessTokenProvider provider);
+
     // Switch providers at runtime (e.g. applying a Settings dialog change).
     // Tears down and replaces the internal protocol + context-info provider
     // and clears conversation history, since message formats aren't
@@ -470,6 +478,7 @@ private slots:
 
 private:
     void createProtocol(Provider provider, const QString& url, const QString& apiKey);
+    void applyAccessTokenProvider();   // m_accessTokenProvider to the current protocol
     void connectProtocol();
     void syncToolsToProtocol();
     bool usesOpenAiToolFormat() const;   // Ollama and OpenAI-compatible servers
@@ -525,6 +534,7 @@ private:
     QString                       m_usageAppTag;   // empty = fall back to the application name
     ToolConsentHandler            m_consentHandler;
     ContextWindowResolver         m_contextWindowResolver;
+    AccessTokenProvider           m_accessTokenProvider;
     bool                          m_validateToolInput = false;
     int                           m_maxToolCallsPerTurn = 0;   // 0 = unlimited
     int                           m_maxToolResultChars = 20000; // 0 = unlimited

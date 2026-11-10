@@ -10,6 +10,7 @@ Contents:
 
 - [Provider](#qtllmprovider)
 - [Client](#qtllmclient)
+- [OAuth2Session](#qtllmoauth2session)
 - [Agent](#qtllmagent)
 - [AgentRegistry](#qtllmagentregistry)
 - [AgentsWidget](#qtllmagentswidget)
@@ -85,6 +86,7 @@ explicit Client(Provider provider,
 | `static modelMatches(QString model, QStringList patterns)` | True when the model matches one of the patterns (`*` and `?` wildcards, case-insensitive) |
 | `setProvider(Provider, url, apiKey)` / `provider()` | Switch backend at runtime. Starts a new conversation; tools, model and system prompt are kept |
 | `setApiKey(QString)` / `setEndpointUrl(QString)` | Change credentials without touching the conversation |
+| `setAccessTokenProvider(AccessTokenProvider)` | Send the user's bearer token (`Authorization: Bearer ...`) instead of the API key, for a gateway behind an OAuth2 proxy. Asked before every request; an empty token fails the request with "Not signed in". Claude and OpenAI providers; survives `setProvider()`. See [OAuth2Session](#qtllmoauth2session) |
 | `setSystemPrompt(QString)` | Prepended to every request. Omitted when empty. May be changed mid-conversation — history is kept, takes effect from the next request (invalidates the prompt-cache prefix) |
 
 ### Tool registration
@@ -187,6 +189,121 @@ using ContextWindowResolver = std::function<int(const QString& provider, const Q
 
 ---
 
+## `QtLLM::OAuth2Session`
+
+Sign-in of the user with an OAuth2 / OpenID Connect identity provider, for a
+gateway that authenticates users instead of handing out API keys: an OAuth2
+proxy (e.g. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/)) checks
+the user's token and puts the real API key into the forwarded request. No API
+key is stored on the user's machine.
+
+Authorization Code flow with PKCE and a loopback redirect: `signIn()` opens the
+system browser at the provider's login page (passed straight through when the
+user is already signed in there), the provider redirects to the local
+`redirectUri` with a code, and the code is exchanged for tokens. No client
+secret is involved. Tokens are refreshed in the background while the refresh
+token lasts. They live in memory only unless `setTokenStorePath()` names a file
+to keep them between runs.
+
+The library contains no provider URLs or client IDs: the application supplies
+them.
+
+```cpp
+QtLLM::OAuth2Config cfg;
+cfg.issuer      = QUrl("https://idp.example.com/oauth");          // discovery: <issuer>/.well-known/openid-configuration
+cfg.clientId    = "<client id>";                                   // public client: not a secret
+cfg.scopes      = {"openid", "profile"};
+cfg.redirectUri = QUrl("http://localhost:12000/auth/callback");    // registered at the provider, port included
+
+auto* session = new QtLLM::OAuth2Session(cfg, this);
+// Optional: sign in without the browser on the next start while the token lasts.
+session->setTokenStorePath(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                           + "/oauth2-session.dat");
+auto* client  = new QtLLM::Client(QtLLM::Provider::Claude,
+                                  "https://gateway.example.com/v1/messages", QString(), this);
+client->setAccessTokenProvider(session->accessTokenProvider());
+
+connect(session, &QtLLM::OAuth2Session::signedIn, this, [=]() {
+    statusBar()->showMessage("Signed in as " + session->displayName());
+});
+connect(session, &QtLLM::OAuth2Session::signInRequired, session, &QtLLM::OAuth2Session::signIn);
+session->signIn();
+```
+
+### `QtLLM::OAuth2Config`
+
+| Field | Default | Description |
+|---|---|---|
+| `issuer` | *(empty)* | Identity provider; endpoints are read from `<issuer>/.well-known/openid-configuration` |
+| `authorizationEndpoint` / `tokenEndpoint` / `userInfoEndpoint` | *(empty)* | Set to skip discovery or override it. Userinfo is optional; its claims are merged into `claims()` |
+| `clientId` | *(empty)* | Client ID registered at the provider |
+| `scopes` | `{"openid"}` | `openid` makes the provider return an ID token with the user's name |
+| `redirectUri` | *(empty)* | Loopback URL registered at the provider, exactly, port included. Host must be `localhost`, `127.0.0.1` or `::1` |
+| `signInTimeoutMs` | 5 min | A sign-in not completed in the browser within this time fails |
+| `refreshMarginSecs` | `120` | The access token is refreshed this long before it expires |
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `signIn()` | Sign in. Ends in `signedIn()` or `signInFailed()`. With a token store, the stored tokens are tried first: a valid access token signs in at once, an expired one is refreshed silently, only otherwise the browser opens. Called again while waiting, it starts over (the user may have closed the tab) |
+| `setTokenStorePath(QString)` / `tokenStorePath()` | Keep the tokens in this file between runs; the application picks a per-user location. On Windows the file is encrypted for the current Windows user (DPAPI); elsewhere it is plain but owner-only. Written after every sign-in and refresh, deleted by `signOut()` and when the session expires. Tokens of another issuer or client ID are ignored. Empty (default) = memory only |
+| `cancelSignIn()` / `signOut()` | Abandon the sign-in / forget all tokens |
+| `state()` / `isSignedIn()` | `SignedOut`, `SigningIn`, `SignedIn` / a valid access token is present |
+| `accessToken()` / `idToken()` / `expiresAt()` | Current tokens; `accessToken()` is empty when expired |
+| `accessTokenProvider()` | For `Client::setAccessTokenProvider()` and `AgentConfig::accessTokenProvider` |
+| `claims()` | ID token claims merged with the userinfo answer. Decoded without checking the signature: meant for display, the gateway verifies the token |
+| `displayName()` / `email()` / `groups()` | Convenience over `claims()`. `email()` also finds an address in `preferred_username`, `website` or `upn` |
+| `refresh()` | Refresh now (happens automatically) |
+| `setBrowserOpener(fn)` | Replace opening the system browser (tests, embedded web view) |
+
+### Signals
+
+| Signal | When |
+|---|---|
+| `stateChanged(State)` | Any state change |
+| `signedIn()` / `signInFailed(QString)` | End of `signIn()` |
+| `tokenRefreshed()` | The access token was renewed |
+| `signInRequired(QString)` | The refresh token expired or was revoked; call `signIn()` again |
+| `signedOut()` | Tokens were dropped |
+
+### `QtLLM::AccessTokenProvider`
+
+`std::function<QString()>`, declared in `ProtocolBase.h`. Called right before
+every request; the result goes out as `Authorization: Bearer <token>`. Return an
+empty string for "not signed in". `OAuth2Session::accessTokenProvider()` returns
+one that hands out the current access token and an empty string once the
+session object is gone. Any other token source (another OAuth library, a token
+from the application's own login) can be plugged in the same way.
+
+### Setting up the gateway side
+
+The library only covers the client. The provider registration and the proxy
+belong to whoever runs the gateway:
+
+- Register a **public client** for the Authorization Code flow with PKCE, and
+  the exact loopback redirect URI including the port. No client secret is used.
+- Request the scopes the proxy needs, e.g. a groups scope when access is
+  granted per group.
+- Run an OAuth2 proxy in front of the API that accepts the bearer token,
+  replaces it with the real API key and forwards the request. It may also pass
+  the user's e-mail on, so the API's usage can be broken down per user.
+
+### Security notes
+
+- `clientId`, `issuer` and `redirectUri` are not secrets and may be compiled
+  into the application.
+- The access and refresh tokens are credentials. Without a token store they
+  never touch the disk. With one, the file is encrypted for the current Windows
+  user (DPAPI): other users and other machines cannot read it, programs running
+  as the same user can. Elsewhere the file is plain, readable by the owner only.
+- `signOut()` deletes the stored tokens; it does not end the user's session at
+  the identity provider in the browser.
+- Only loopback redirect URIs are accepted, and a callback whose `state` does
+  not match the sign-in in progress is ignored.
+
+---
+
 ## `QtLLM::Agent`
 
 A headless conversation the user never sees. `Agent` **is** a `Client` — the entire `Client` API above applies unchanged, including `registerTool()`, `setToolEnabled()`, `BuiltinTools::registerTools()`, `exportConversation()`, and every signal. On top of that it adds spawn-time configuration, a queued request/callback call style, a spend cap, and automatic registration in [`AgentRegistry`](#qtllmagentregistry).
@@ -219,6 +336,7 @@ delete agent;   // kills it; pending callbacks are dropped, not invoked
 | `provider` | `Provider::Ollama` | Backend for this agent |
 | `url` | *(provider default)* | Endpoint; empty means `http://localhost:11434/api/chat` for Ollama, `http://localhost:1234/v1` for `Provider::OpenAI`, otherwise `https://api.anthropic.com/v1/messages` |
 | `apiKey` | *(empty)* | Ignored for Ollama |
+| `accessTokenProvider` | *(empty)* | Bearer token instead of `apiKey`, usually `OAuth2Session::accessTokenProvider()` (see [OAuth2Session](#qtllmoauth2session)) |
 | `model` | *(empty)* | Preferred model identifier |
 | `fallbackModels` | *(empty)* | Tried in order when the provider does not offer `model` |
 | `systemPrompt` | *(empty)* | Omitted when empty |
@@ -1203,4 +1321,9 @@ The library never throws. All errors surface through the `errorOccurred(QString)
 | Tool loop exceeds 25 rounds | `responseReady` with a `[Stopped: tool-use iteration limit ...]` note |
 | Model list unavailable | `modelsAvailable({})`; logged, no `errorOccurred` |
 | Malformed JSON | Emits `errorOccurred`, does not crash |
+| `Provider::Claude` without API key and without `AccessTokenProvider` | Emits `errorOccurred` immediately; nothing is sent |
+| `AccessTokenProvider` returns an empty token | Emits `errorOccurred` with `Not signed in - ...`; nothing is sent, the prompt is removed from the history |
+| Gateway rejects the token (HTTP 401 / 403) | Emits `errorOccurred` with the gateway's message, as any HTTP error |
+| `OAuth2Session` sign-in fails (browser denied, timeout, port in use, token endpoint error) | `signInFailed(QString)`; not routed through any `Client` |
+| `OAuth2Session` refresh token expired or revoked | `signInRequired(QString)`; tokens and the token store are cleared |
 | Tool handler throws | Caught by the protocol layer; the model receives `{"status":"error","message":"Internal error: <what>"}` with `is_error` — the process never crashes |

@@ -141,9 +141,15 @@ void OpenAiProtocol::drainQueue()
 QList<QPair<QByteArray, QByteArray>> OpenAiProtocol::requestHeaders() const
 {
     QList<QPair<QByteArray, QByteArray>> list;
-    if (!m_apiKey.isEmpty())
-        list.append({QByteArray("Authorization"), "Bearer " + m_apiKey.toUtf8()});
+    const QString token = m_accessTokenProvider ? m_accessTokenProvider() : m_apiKey;
+    if (!token.isEmpty())
+        list.append({QByteArray("Authorization"), "Bearer " + token.toUtf8()});
     return list;
+}
+
+void OpenAiProtocol::setAccessTokenProvider(AccessTokenProvider provider)
+{
+    m_accessTokenProvider = std::move(provider);
 }
 
 QJsonObject OpenAiProtocol::buildRequestBody() const
@@ -187,6 +193,11 @@ QJsonObject OpenAiProtocol::buildRequestBody() const
 
 void OpenAiProtocol::sendRequest()
 {
+    if (m_accessTokenProvider && m_accessTokenProvider().isEmpty()) {
+        failTurn(QStringLiteral("Not signed in - sign in before sending messages "
+                                "(the sign-in was not completed or has expired)."));
+        return;
+    }
     const QByteArray bytes = QJsonDocument(buildRequestBody()).toJson(QJsonDocument::Compact);
 
     if (!m_turnTimerStarted) {

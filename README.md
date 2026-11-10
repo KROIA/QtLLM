@@ -23,6 +23,7 @@ Tool/function calling, streamed answers (on by default), and a Qt-idiomatic sign
 - Ready-made widgets: chat dock (Markdown bubbles, inline interview cards, color swatches), settings dialog with tool manager and usage charts
 - Providers `Claude`, `ClaudeCode`, `Ollama` and `OpenAI`, switchable at run time with `Client::setProvider()`
 - Usage statistics, persistent usage history, and cost estimation per turn
+- User sign-in instead of API keys (`OAuth2Session`): OAuth2 / OpenID Connect Authorization Code flow with PKCE in the system browser, background token refresh, optional encrypted token store; requests carry the user's bearer token for a gateway behind an OAuth2 proxy
 - Ollama: auto-start server, model discovery, and one-click model downloads
 - Builds as shared and static library
 - Scripting: the model writes one script instead of many tool calls (optional, `QTLLM_SCRIPTING`)

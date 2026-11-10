@@ -16,6 +16,10 @@ struct QT_LLM_API AgentConfig
     Provider provider   = Provider::Ollama;
     QString  url;                         // empty selects the provider default
     QString  apiKey;                      // ignored for Ollama
+    // Bearer token instead of apiKey, for a gateway behind an OAuth2 proxy -
+    // see Client::setAccessTokenProvider(). Usually
+    // OAuth2Session::accessTokenProvider() of the app's sign-in session.
+    AccessTokenProvider accessTokenProvider;
     QString  model;
     // Tried in order when the provider does not offer `model`. If none of the
     // candidates is offered either, Client::pickFallbackModel() chooses - an

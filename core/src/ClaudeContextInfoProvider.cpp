@@ -34,11 +34,25 @@ namespace QtLLM
         return 200000;
     }
 
+    QPair<QByteArray, QByteArray> ClaudeContextInfoProvider::authHeader() const
+    {
+        if (m_accessTokenProvider) {
+            const QString token = m_accessTokenProvider();
+            if (token.isEmpty())
+                return {};
+            return {QByteArray("Authorization"), "Bearer " + token.toUtf8()};
+        }
+        if (m_apiKey.isEmpty())
+            return {};
+        return {QByteArray("x-api-key"), m_apiKey.toUtf8()};
+    }
+
     void ClaudeContextInfoProvider::fetchContextWindowTokens(const QString& model)
     {
         QUrl url = m_messagesUrl;
         QString path = url.path();
-        if (model.isEmpty() || m_apiKey.isEmpty() || !path.endsWith("/messages") || m_modelTransport->isBusy()) {
+        const QPair<QByteArray, QByteArray> auth = authHeader();
+        if (model.isEmpty() || auth.first.isEmpty() || !path.endsWith("/messages") || m_modelTransport->isBusy()) {
             const int tokens = publishedContextWindow(model);
             QTimer::singleShot(0, this, [this, tokens]() { emit contextWindowTokensReady(tokens); });
             return;
@@ -48,7 +62,7 @@ namespace QtLLM
 
         m_windowModel = model;
         QList<QPair<QByteArray, QByteArray>> headers;
-        headers.append({"x-api-key", m_apiKey.toUtf8()});
+        headers.append(auth);
         headers.append({QByteArray("anthropic-version"), QByteArray("2023-06-01")});
         m_modelTransport->get(url, headers);
     }
@@ -108,7 +122,9 @@ namespace QtLLM
         url.setPath(path);
 
         QList<QPair<QByteArray, QByteArray>> headers;
-        headers.append({"x-api-key", m_apiKey.toUtf8()});
+        const QPair<QByteArray, QByteArray> auth = authHeader();
+        if (!auth.first.isEmpty())
+            headers.append(auth);
         headers.append({QByteArray("anthropic-version"), QByteArray("2023-06-01")});
         m_countTransport->post(url, QJsonDocument(body).toJson(QJsonDocument::Compact), headers);
     }

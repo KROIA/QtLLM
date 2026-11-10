@@ -77,6 +77,24 @@ void ClaudeProtocol::setUrl(const QUrl& url)
     m_url = url;
 }
 
+void ClaudeProtocol::setAccessTokenProvider(AccessTokenProvider provider)
+{
+    m_accessTokenProvider = std::move(provider);
+}
+
+QPair<QByteArray, QByteArray> ClaudeProtocol::authHeader() const
+{
+    if (m_accessTokenProvider) {
+        const QString token = m_accessTokenProvider();
+        if (token.isEmpty())
+            return {};
+        return {QByteArray("Authorization"), "Bearer " + token.toUtf8()};
+    }
+    if (m_apiKey.isEmpty())
+        return {};
+    return {QByteArray("x-api-key"), m_apiKey.toUtf8()};
+}
+
 void ClaudeProtocol::setTools(const QList<QJsonObject>& toolSchemas,
                               const QMap<QString, ToolCallHandler>& handlers)
 {
@@ -150,10 +168,13 @@ void ClaudeProtocol::sendRequest()
     // does return a 401 with a parseable error body for that (so this isn't
     // the only path to a visible error), but skipping the round trip gives
     // immediate, unambiguous feedback instead of waiting on a network error.
-    if (m_apiKey.isEmpty()) {
-        failTurn(QStringLiteral(
-            "No Anthropic API key set - pass a non-empty apiKey to the "
-            "Client constructor before sending messages."));
+    const QPair<QByteArray, QByteArray> auth = authHeader();
+    if (auth.first.isEmpty()) {
+        failTurn(m_accessTokenProvider
+            ? QStringLiteral("Not signed in - sign in before sending messages "
+                             "(the sign-in was not completed or has expired).")
+            : QStringLiteral("No Anthropic API key set - pass a non-empty apiKey to the "
+                             "Client constructor before sending messages."));
         return;
     }
 
@@ -170,7 +191,7 @@ void ClaudeProtocol::sendRequest()
 
     emit requestStarted();
     QList<QPair<QByteArray, QByteArray>> headers;
-    headers.append({"x-api-key",        m_apiKey.toUtf8()});
+    headers.append(auth);
     headers.append({ QByteArray("anthropic-version"), QByteArray("2023-06-01")});
     // Prompt caching with ephemeral cache_control works on the first-party API
     // without a beta header.  If a Foundry/Azure endpoint rejects cache_control,
@@ -942,7 +963,9 @@ void ClaudeProtocol::fetchModels()
     modelsUrl.setPath(path);
 
     QList<QPair<QByteArray, QByteArray>> headers;
-    headers.append({"x-api-key", m_apiKey.toUtf8()});
+    const QPair<QByteArray, QByteArray> auth = authHeader();
+    if (!auth.first.isEmpty())
+        headers.append(auth);
     headers.append({QByteArray("anthropic-version"), QByteArray("2023-06-01")});
     m_modelsTransport->get(modelsUrl, headers);
 }
