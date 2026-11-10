@@ -26,7 +26,7 @@ Tool/function calling, streamed answers (on by default), and a Qt-idiomatic sign
 - Ollama: auto-start server, model discovery, and one-click model downloads
 - Builds as shared and static library
 - Scripting: the model writes one script instead of many tool calls (optional, `QTLLM_SCRIPTING`)
-- Builds with Qt 5.15 (default) and Qt 6 (verified with Qt 6.11). Needs OpenSSL; with the default `QTLLM_SCRIPTING=ON` also the [ScriptHost](https://github.com/KROIA/ScriptHost) library and the Qt module Qml (see [Building.md](documentation/Building.md#options))
+- Builds with Qt 5.15 (default) and Qt 6 (verified with Qt 6.11). Needs the OpenSSL run-time DLLs for https, which the build copies next to the programs; with the default `QTLLM_SCRIPTING=ON` also the [ScriptHost](https://github.com/KROIA/ScriptHost) library and the Qt module Qml (see [Building.md](documentation/Building.md#options))
 
 ---
 
@@ -35,11 +35,11 @@ Tool/function calling, streamed answers (on by default), and a Qt-idiomatic sign
 | | Version |
 |---|---|
 | Qt | 5.15.x (default) or 6.x |
-| OpenSSL | 1.1.1x (Windows runtime DLLs) |
+| OpenSSL | Run-time DLLs for https: 1.1.1 for Qt 5, 3.x for Qt 6 |
 | CMake | 3.20+ |
 | MSVC | 2019 / 2022 (Windows x64) |
 
-> OpenSSL 3.x is **not** compatible with Qt 5.15. Use *Win64 OpenSSL v1.1.1w Light*.
+> Qt 5.15 loads OpenSSL 1.1.1 and cannot use 3.x; Qt 6 needs 3.x. The build picks the matching pair and copies it next to the programs, also for an application that uses QtLLM as a dependency (see [Building.md](documentation/Building.md#openssl)).
 
 ---
 

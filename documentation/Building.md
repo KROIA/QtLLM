@@ -5,14 +5,26 @@
 | Dependency | Version | Where to get it |
 |---|---|---|
 | Qt | 5.15.x (default) or 6.x | [qt.io/download](https://www.qt.io/download) — select MSVC 2019 64-bit for Qt 5, MSVC 2022 64-bit for Qt 6. Qt 6 is chosen with `-DQT_MAJOR_VERSION=6` at configure; verified with 6.11 |
-| OpenSSL | 1.1.1x | [slproweb.com](https://slproweb.com/products/Win32OpenSSL.html) — *Win64 OpenSSL v1.1.1w Light* |
+| OpenSSL | 1.1.1 for Qt 5, 3.x for Qt 6 | Run-time DLLs only, for https. The Qt Maintenance Tool installs them (Developer and Designer Tools > OpenSSL Toolkit), or [slproweb.com](https://slproweb.com/products/Win32OpenSSL.html) |
 | CMake | 3.20+ | Bundled with Visual Studio 2022 |
 | MSVC | 2019 / 2022 | Visual Studio with "Desktop development with C++" workload |
 
-> **OpenSSL version matters.** Qt 5.15 requires OpenSSL **1.1.x** at runtime for HTTPS.
-> OpenSSL 3.x (`libssl-3-x64.dll`) is not compatible and will cause TLS errors.
-> After installing OpenSSL 1.1.1w, delete `build/` and reconfigure — the build system
-> locates and copies the DLLs automatically.
+### OpenSSL
+
+QtLLM does not call OpenSSL itself. Qt loads it at run time for https, and without it every request to Claude or another https server fails ("TLS initialization failed"); Ollama over http is not affected. Which OpenSSL depends on the Qt version:
+
+| Qt | OpenSSL | Files |
+|---|---|---|
+| 5.15 | 1.1.1 | `libssl-1_1-x64.dll`, `libcrypto-1_1-x64.dll` |
+| 6 | 3.x | `libssl-3-x64.dll`, `libcrypto-3-x64.dll` |
+
+The build copies the pair next to the programs: into the build output folder and into `installation/bin`. It does that for the project being built, so an application that has QtLLM as a dependency gets them next to its own programs as well. Configure prints where it took them from:
+
+```
+-- QtLLM: OpenSSL for Qt 5 https from C:/Program Files/Git/mingw64/bin
+```
+
+They are looked for in this order: `QTLLM_OPENSSL_DIR`, Qt's OpenSSL toolkit (`C:/Qt/Tools/OpenSSL` for 1.1.1, `C:/Qt/Tools/OpenSSLv3` for 3.x), the Shining Light packages under Program Files, Git for Windows, `PATH`. When none has the pair, configure warns and copies nothing; the programs then use https only where OpenSSL happens to be on `PATH`.
 
 ---
 
@@ -69,6 +81,8 @@ Outputs land in `installation/bin/` and `installation/lib/`.
 | Option | Default | Effect |
 |---|---|---|
 | `QTLLM_SCRIPTING` | `ON` | Scripting ([Scripting.md](Scripting.md)). Fetches the [ScriptHost](https://github.com/KROIA/ScriptHost) library, which needs the Qt module **Qml**. `OFF` builds without both: there is no `QtLLM::Scripting` and `QTLLM_HAS_SCRIPTING` is 0 |
+| `QTLLM_DEPLOY_OPENSSL` | `ON` | Copies the OpenSSL DLLs Qt needs for https next to the programs (see [OpenSSL](#openssl)). `OFF` for an application that ships OpenSSL its own way |
+| `QTLLM_OPENSSL_DIR` | empty | The folder that holds the two OpenSSL DLLs, when they should not be looked for |
 
 ```bat
 cmake --preset x64-Debug -DQTLLM_SCRIPTING=OFF
