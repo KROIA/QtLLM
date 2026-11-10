@@ -73,7 +73,6 @@ ChatWindow::ChatWindow(const QString& apiKey,
     m_currentModel = QSettings().value(kModelKey, model).toString();
     m_client.setModel(m_currentModel);
     m_systemPrompt = kDefaultSystemPrompt;
-    m_client.setMaxTokens(1024);
     m_client.setSystemPrompt(m_systemPrompt);
 
     // Refresh model prices from the LiteLLM community JSON (disk-cached,
@@ -107,7 +106,6 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
     m_currentModel = QSettings().value(kModelKey, model).toString();
     m_client.setModel(m_currentModel);
     m_systemPrompt = kDefaultSystemPrompt;
-    m_client.setMaxTokens(1024);
     m_client.setSystemPrompt(m_systemPrompt);
 
     if (m_isOllama) {
