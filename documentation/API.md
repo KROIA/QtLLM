@@ -6,7 +6,34 @@ All public types live in the `QtLLM` namespace. Include the umbrella header:
 #include <QtLLM.h>
 ```
 
-Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [AgentsWidget](#qtllmagentswidget) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [ToolSettingsWidget](#qtllmtoolsettingswidget) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Streaming, effort and context](#streaming-effort-and-context) · [Asynchronous tools](#asynchronous-tools) · [Image tool results](#image-tool-results) · [AppInterface](#qtllmappinterface) · [GuideOverlay and speech bubbles](#guideoverlay-and-speech-bubbles) · [Switching features on and off](#switching-features-on-and-off) · [AppKnowledge](#qtllmappknowledge) · [Scripting](#qtllmscripting) · [Error handling](#error-handling)
+Contents:
+
+- [Provider](#qtllmprovider)
+- [Client](#qtllmclient)
+- [Agent](#qtllmagent)
+- [AgentRegistry](#qtllmagentregistry)
+- [AgentsWidget](#qtllmagentswidget)
+- [Tool](#qtllmtool)
+- [ToolResult helpers](#tool-result-helpers)
+- [BuiltinTools](#qtllmbuiltintools)
+- [InterviewTool](#qtllminterviewtool)
+- [InterviewWidget](#qtllminterviewwidget)
+- [ChatDockWidget](#qtllmchatdockwidget)
+- [SettingsDialog](#qtllmsettingsdialog)
+- [ToolSettingsWidget](#qtllmtoolsettingswidget)
+- [UsageStats](#qtllmusagestats)
+- [PricingRegistry](#qtllmpricingregistry)
+- [UsageHistory](#qtllmusagehistory)
+- [OllamaManager](#qtllmollamamanager)
+- [Streaming, effort and context](#streaming-effort-and-context)
+- [Asynchronous tools](#asynchronous-tools)
+- [Image tool results](#image-tool-results)
+- [AppInterface](#qtllmappinterface)
+- [GuideOverlay and speech bubbles](#guideoverlay-and-speech-bubbles)
+- [Switching features on and off](#switching-features-on-and-off)
+- [AppKnowledge](#qtllmappknowledge)
+- [Scripting](#qtllmscripting)
+- [Error handling](#error-handling)
 
 ---
 
