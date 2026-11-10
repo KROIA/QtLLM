@@ -16,7 +16,7 @@ class ChatWindow : public QMainWindow
 public:
     explicit ChatWindow(const QString& apiKey,
                         const QString& endpointUrl,
-                        const QString& model = "claude-sonnet-4-5",
+                        const QString& model = "claude-sonnet-5-5",
                         QWidget* parent = nullptr);
     explicit ChatWindow(QtLLM::Provider provider,
                         const QString& apiKey,
@@ -41,7 +41,15 @@ private slots:
 
 private:
     void buildUi();
+    // Main toolbar: actions the assistant can list and trigger (ui_list_actions,
+    // ui_trigger_action) - and the user can click.
+    void buildToolBar();
+    void openSettings();
+    void saveConversation();
     QWidget* buildAgentDemoPanel();
+    // Buttons that send ready-made requests to the assistant, one per library
+    // feature: highlights, shapes, speech bubbles, tours, looking at the UI.
+    QWidget* buildFeatureDemoPanel();
     void registerTools();
     void connectSignals();
     void initOllamaIfNeeded();
@@ -50,6 +58,8 @@ private:
     // the Kill button (or this window) destroys it, so it shows up in
     // Settings > Agents while it exists.
     QtLLM::Agent* demoAgent();
+    // Provider, credentials and model of the chat, for an agent spawned now.
+    QtLLM::AgentConfig agentConfig(const QString& name) const;
     void runAgentTask(const QString& label,
                       const QString& prompt,
                       std::function<void(const QString&)> onSuccess = nullptr);
@@ -69,6 +79,12 @@ private:
     QString      m_savedClaudeApiKey;
     QString      m_savedClaudeEndpointUrl;
     QString      m_savedOllamaUrl;
+    QString      m_savedFoundryApiKey;
+    QString      m_savedFoundryUrl;
+    // What the Settings dialog's Provider combo last had selected. Finer
+    // grained than Client::provider(): Anthropic API and Foundry are the same
+    // protocol with different credentials.
+    QtLLM::SettingsDialog::Provider m_settingsProvider = QtLLM::SettingsDialog::Provider::Claude;
 
     QtLLM::ChatDockWidget* m_chatDock = nullptr;
     QtLLM::Client m_client;
@@ -76,9 +92,16 @@ private:
     // Agent demo panel
     QString       m_lastAssistantReply;
     QtLLM::Agent* m_demoAgent   = nullptr;
+    QtLLM::AppInterface* m_appInterface = nullptr;
     QTextEdit*    m_agentLog    = nullptr;
     QLabel*       m_agentStatus = nullptr;
     QPushButton*  m_killAgentBtn = nullptr;
+
+    // Panels the toolbar can show and hide
+    QWidget*      m_statsBox = nullptr;
+    QWidget*      m_demoBox  = nullptr;
+    QWidget*      m_agentBox = nullptr;
+    QAction*      m_darkThemeAction = nullptr;
 
     // Model bar (top, Ollama only)
     QComboBox*   m_modelCombo  = nullptr;

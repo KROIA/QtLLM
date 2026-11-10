@@ -42,7 +42,8 @@ public:
     bool isAnswered() const;
 
     // { "status": "answered", "answers": { "<question>": "label" | ["l1","l2"] } }
-    // or { "status": "skipped" }. Empty object until the user acted.
+    // or { "status": "skipped" }. Empty object until the user acted. An empty
+    // or repeated question text is keyed as "<question> (#<position>)".
     QJsonObject result() const;
 
 signals:

@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QString>
 #include <QScrollBar>
+#include <QPointer>
+#include <QMap>
 
 namespace QtLLM {
 
@@ -19,33 +21,34 @@ struct ChartBucket
     qint64 toMs   = 0;
 
     // Category mode values
-    int uncachedInput  = 0;
-    int cacheRead      = 0;
-    int cacheWrite     = 0;
-    int output         = 0;
+    // qint64: summed over long ranges, cache-read tokens alone exceed 2^31
+    qint64 uncachedInput  = 0;
+    qint64 cacheRead      = 0;
+    qint64 cacheWrite     = 0;
+    qint64 output         = 0;
 
     // Model mode values: model name -> total tokens
-    QMap<QString, int> perModel;
+    QMap<QString, qint64> perModel;
 
     double costUsd = 0.0;
-    int    totalTokens() const { return uncachedInput + cacheRead + cacheWrite + output; }
+    qint64 totalTokens() const { return uncachedInput + cacheRead + cacheWrite + output; }
 };
 
 // Per-model summary tile data.
 struct ModelSummary
 {
     QString model;
-    int     inputTokens              = 0;
-    int     outputTokens             = 0;
-    int     cacheReadInputTokens     = 0;
-    int     cacheCreationInputTokens = 0;
-    int     toolCalls                = 0;
-    int     turns                    = 0;
+    qint64  inputTokens              = 0;
+    qint64  outputTokens             = 0;
+    qint64  cacheReadInputTokens     = 0;
+    qint64  cacheCreationInputTokens = 0;
+    qint64  toolCalls                = 0;
+    qint64  turns                    = 0;
     double  costUsd                  = 0.0;
 
     double cacheHitRate() const
     {
-        int denom = cacheReadInputTokens + inputTokens + cacheCreationInputTokens;
+        qint64 denom = cacheReadInputTokens + inputTokens + cacheCreationInputTokens;
         if (denom <= 0) return 0.0;
         return static_cast<double>(cacheReadInputTokens) / denom;
     }
@@ -105,7 +108,7 @@ private:
     QColor modelColour(int index) const;
     bool   isDark() const;
 
-    static QString humanTokens(int tokens);
+    static QString humanTokens(qint64 tokens);
     static QString humanTime(qint64 ms);
 
     // Layout rects (computed in paintEvent)
@@ -115,7 +118,7 @@ private:
     QRect m_tilesRect;
 
     // Data
-    UsageHistory*         m_history = nullptr;
+    QPointer<UsageHistory> m_history;  // owned by a Client that may die first
     UsageHistory*         m_ownedHistory = nullptr;  // self-loading fallback when no external history is set
     QVector<ChartBucket>  m_buckets;
     QVector<ModelSummary> m_summaries;

@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QUrl>
 #include <QMap>
+#include <QSharedPointer>
 #include <functional>
 
 namespace QtLLM {
@@ -20,8 +21,12 @@ class ContextInfoProvider;
 
 // Selects which LLM provider protocol Client uses internally.
 enum class Provider {
-    Claude,  // Anthropic Claude Messages API (default)
-    Ollama   // Ollama local inference server
+    Claude,     // Anthropic Messages API with an API key: api.anthropic.com,
+                // Microsoft Foundry, or any gateway speaking the same protocol
+    Ollama,     // Ollama local inference server
+    ClaudeCode  // the user's claude.ai subscription, through the locally
+                // installed Claude Code CLI (see ClaudeCodeProtocol); url and
+                // apiKey are unused
 };
 
 // Called before a tool handler runs. Return false to deny execution — the
@@ -35,6 +40,56 @@ using ToolConsentHandler = std::function<bool(const QString& toolName, const QJs
 // docs, the app can inject a live lookup without Client changing at all —
 // same shape as PricingRegistry::PricingResolver.
 using ContextWindowResolver = std::function<int(const QString& provider, const QString& model)>;
+
+class Client;
+
+// Handed to an asynchronous tool handler: how it reports back. Copyable, and
+// usable from any thread - the result is delivered on the GUI thread.
+class QT_LLM_API ToolCompletion
+{
+public:
+    ToolCompletion() = default;
+
+    // Reports the tool's result to the model. Only the first call counts; a
+    // call after the timeout or after the turn was cancelled does nothing.
+    void finish(const QJsonObject& result) const;
+    // Shown as the chat's status line while the tool is working
+    // (Client::toolProgress).
+    void progress(const QString& statusText) const;
+    // True once finish() was called or the tool timed out - a long-running
+    // tool can check it and stop early.
+    bool isFinished() const;
+
+private:
+    friend class Client;
+    struct State;
+    QSharedPointer<State> d;
+};
+
+// A tool that answers later: the handler returns immediately and calls
+// done.finish(result) when the work is done.
+using AsyncToolHandler = std::function<void(const QJsonObject& input, ToolCompletion done)>;
+
+// How large the conversation may get, and what happens when it gets there.
+struct QT_LLM_API ContextPolicy
+{
+    enum class Strategy {
+        Summarize,   // the model writes a summary that replaces the conversation
+        DropOldest   // oldest turns are removed; no request, nothing remembered of them
+    };
+
+    // Compact by itself when the limit is reached. Off: only on request
+    // (Client::compactConversation(), the chat's compact button).
+    bool     autoCompact  = false;
+    // The context to work with, in tokens; 0 = the model's own window. Lets a
+    // 1M-token model be held at e.g. 300k: cheaper turns, and the usage bar
+    // fills up against this figure.
+    int      limitTokens  = 0;
+    // Compaction starts at this share of the limit, because the next turn
+    // still adds to the conversation.
+    double   triggerRatio = 0.9;
+    Strategy strategy     = Strategy::Summarize;
+};
 
 class QT_LLM_API Client : public QObject
 {
@@ -54,7 +109,16 @@ public:
 
     ~Client() override;
 
-    // Model ID string; provider-specific (e.g. "claude-sonnet-4-5" or "llama3.2").
+    // Model used until the application sets one: the best value for tool work
+    // on each backend (Claude: the current Sonnet), not the most capable.
+    static QString defaultModel(Provider provider);
+    // What to run on when the configured model is not offered: the default
+    // model, else the next cheaper current one, and only then whatever the
+    // provider lists first - which on the Anthropic API is the newest and most
+    // expensive model.
+    static QString pickFallbackModel(Provider provider, const QStringList& offered);
+
+    // Model ID string; provider-specific (e.g. "claude-sonnet-5-5" or "llama3.2").
     void setModel(const QString& model);
     // The model requests actually go out with. Not necessarily the one that was
     // set: validateCurrentModel() replaces a model the provider does not offer.
@@ -75,6 +139,14 @@ public:
     // and clears conversation history, since message formats aren't
     // compatible across providers. apiKey is ignored for Ollama.
     void setProvider(Provider provider, const QString& url, const QString& apiKey = QString());
+    Provider provider() const { return m_provider; }
+
+    // Abort the turn in flight, if any: the request is cancelled, queued
+    // prompts are dropped and the unanswered prompt is removed from the
+    // history. requestFinished() is emitted; responseReady() and
+    // errorOccurred() are not. A tool handler that is already running is not
+    // interrupted - its result is discarded.
+    void cancelRequest();
 
     // Register a tool the LLM can call. The handler is called synchronously when the LLM invokes the tool.
     void registerTool(const Tool& tool, ToolHandler handler);
@@ -85,7 +157,27 @@ public:
                       const QJsonObject& parameterSchema,
                       ToolHandler handler);
 
+    // Register a tool that answers later, without blocking the application
+    // while it works. The handler runs on the GUI thread and must return
+    // quickly; it hands the result to `done` whenever it has it - from a
+    // signal, a timer, a network reply. The turn waits for it. A tool that
+    // has not answered within Tool::setTimeoutMs() (default 5 minutes) is
+    // reported to the model as timed out.
+    void registerAsyncTool(const Tool& tool, AsyncToolHandler handler);
+
+    // Register a tool whose (ordinary, blocking) handler runs on a worker
+    // thread, for work that takes a while: computation, file processing. The
+    // handler must not touch widgets.
+    void registerBackgroundTool(const Tool& tool, ToolHandler handler);
+
     void unregisterTool(const QString& toolName);
+
+    // Registers this client's tools on `other` as well: same definitions,
+    // same handlers, same enabled state - e.g. to give a background agent what
+    // the chat has. The handlers are shared, not copied: a tool that reports
+    // into the chat still does so when the other client calls it. Tools named
+    // in `except` are left out.
+    void shareToolsWith(Client* other, const QStringList& except = QStringList()) const;
 
     // Enable/disable a registered tool without losing its definition or
     // handler. Disabled tools are omitted from the schema list sent to the
@@ -101,10 +193,14 @@ public:
     // overload appear with name/description only.
     QList<Tool> registeredTools() const;
 
-    // Validate tool input against the registered schema before invoking the
-    // handler (required fields, types, enum values case-insensitively).
-    // On violation the handler is NOT called; the model receives the error
-    // result directly. Default: false (behaviour identical to before).
+    // Check and repair tool input before invoking the handler
+    // (Tool::prepareInput): "5" for an integer and "true" for a boolean are
+    // converted, enum spelling is normalised, defaults are applied, then
+    // required fields, types, ranges, array items and nested objects are
+    // validated, and a parameter name the tool does not have is rejected with
+    // the valid names. On violation the handler is NOT called; the model
+    // receives the error result directly and can correct itself.
+    // Default: false - only enum spelling is normalised.
     void setValidateToolInput(bool enabled);
     bool validateToolInput() const;
 
@@ -114,6 +210,28 @@ public:
     // toolCallLimitReached() is emitted once per turn.
     void setMaxToolCallsPerTurn(int maxCalls);
     int  maxToolCallsPerTurn() const;
+
+    // Upper bound for the serialized size of one tool result. A result stays
+    // in the conversation and is paid for on every later request, so one huge
+    // result is expensive for the rest of the session. A larger result is
+    // replaced by {"truncated":true,"original_chars":N,"content_head":"...",
+    // "hint":...} - valid JSON that tells the model to ask for less. Images
+    // attached with toolImage() do not count. Default 20000; 0 = unlimited.
+    // Tool::setMaxResultChars() overrides it per tool.
+    void setMaxToolResultChars(int chars);
+    int  maxToolResultChars() const;
+
+    // How much the model thinks before answering (see Effort). Lower is faster
+    // and cheaper. Default: the model's own default.
+    void setEffort(Effort effort);
+    Effort effort() const;
+
+    // Deliver the answer while it is generated: responseDelta() carries the
+    // text piece by piece, responseReady() still fires once with all of it.
+    // On by default. An endpoint that cannot stream is detected and used
+    // without streaming automatically.
+    void setStreamingEnabled(bool enabled);
+    bool streamingEnabled() const;
 
     // Consent gate before every tool execution (accept/decline pattern).
     // No handler set = everything allowed (default). Pass nullptr to reset.
@@ -126,6 +244,17 @@ public:
 
     // Clears conversation history and resets session statistics. Preserves registered tools and settings.
     void clearConversation();
+
+    void setContextPolicy(const ContextPolicy& policy);
+    ContextPolicy contextPolicy() const;
+
+    // Shrink the conversation now, by the policy's strategy. Summarize sends
+    // one request and replaces the whole history with the summary it returns;
+    // a prompt sent meanwhile waits for it. Returns false when there is
+    // nothing to compact or a turn is still running. Result arrives through
+    // compactionFinished() / compactionFailed().
+    bool compactConversation();
+    bool isCompacting() const { return m_compacting; }
 
     QJsonArray conversationHistory() const;
 
@@ -172,10 +301,15 @@ public:
 signals:
     // Emitted after all tool calls in a turn are resolved; text is the final LLM reply.
     void responseReady(const QString& text);
+    // A piece of answer text as it arrives (streaming). Includes text the
+    // model writes before calling a tool.
+    void responseDelta(const QString& text);
     // Emitted just before the registered handler is called.
     void toolInvoked(const QString& toolName, const QJsonObject& input);
     // Emitted after the handler returns with its result.
     void toolCompleted(const QString& toolName, const QJsonObject& result);
+    // An asynchronous tool reporting what it is doing (ToolCompletion::progress).
+    void toolProgress(const QString& toolName, const QString& statusText);
     // Covers network errors, HTTP errors, and parse failures; requestFinished is also emitted.
     void errorOccurred(const QString& errorMessage);
     // Emitted once per HTTP send, including tool-loop re-sends.
@@ -192,6 +326,14 @@ signals:
     void modelChanged(const QString& model);
     // Emitted once per turn when setMaxToolCallsPerTurn() is exceeded.
     void toolCallLimitReached(int limit);
+    void compactionStarted();
+    // Context size before and after, in tokens (the "after" is an estimate
+    // until the next turn reports the real figure).
+    void compactionFinished(int tokensBefore, int tokensAfter);
+    // The conversation is unchanged.
+    void compactionFailed(const QString& message);
+    // Emitted when a tool result exceeded the size cap and was shortened.
+    void toolResultTruncated(const QString& toolName, int originalChars);
     // Emitted whenever anything feeding contextBreakdown() changes (system
     // prompt, tool set, or conversation history) — hook for live context UI.
     void contextChanged();
@@ -213,6 +355,7 @@ private slots:
     void validateCurrentModel(const QStringList& models);
 
 private:
+    void createProtocol(Provider provider, const QString& url, const QString& apiKey);
     void connectProtocol();
     void syncToolsToProtocol();
     void refreshContextInfo();  // debounced; called after every contextChanged()
@@ -220,13 +363,21 @@ private:
     struct RegisteredTool {
         QJsonObject claudeSchema;   // toApiObject() format
         QJsonObject openAiSchema;   // toOpenAiApiObject() format
+        // What input is checked against. Not the schema sent to the model:
+        // in strict mode that one has lost ranges and defaults.
+        QJsonObject validationSchema;
         ToolHandler handler;
+        AsyncToolHandler asyncHandler;   // set instead of handler for asynchronous tools
         Tool        tool;           // definition incl. UI metadata (name/description only for raw registrations)
         bool        enabled = true;
     };
 
     void recordSample(const UsageStats& stats);
-    ToolHandler wrapHandler(const QString& toolName, const RegisteredTool& rt);
+    ToolCallHandler wrapHandler(const QString& toolName, const RegisteredTool& rt);
+    QJsonObject capResult(const QString& toolName, int toolLimit, QJsonObject result);
+    void finishCompaction(const QString& summary);
+    void dropOldestTurns();
+    void maybeAutoCompact();
 
     QMap<QString, RegisteredTool> m_tools;
     QJsonArray                    m_history;
@@ -235,12 +386,28 @@ private:
     UsageHistory*                 m_usageHistory;
     QString                       m_currentModel;
     QString                       m_currentProvider;
+    Provider                      m_provider = Provider::Claude;
     QString                       m_systemPrompt;
     QString                       m_usageAppTag;   // empty = fall back to the application name
     ToolConsentHandler            m_consentHandler;
     ContextWindowResolver         m_contextWindowResolver;
     bool                          m_validateToolInput = false;
     int                           m_maxToolCallsPerTurn = 0;   // 0 = unlimited
+    int                           m_maxToolResultChars = 20000; // 0 = unlimited
+    Effort                        m_effort = Effort::Default;
+    bool                          m_streamingEnabled = true;
+
+    ContextPolicy                 m_contextPolicy;
+    bool                          m_compacting = false;
+    int                           m_turnsInFlight = 0;          // prompts sent, not yet answered
+    int                           m_tokensBeforeCompaction = 0;
+    QJsonArray                    m_historyBeforeCompaction;    // restored if the summary fails
+    QStringList                   m_promptsDuringCompaction;    // sent while summarizing; re-attached after
+    bool                          m_ignoreNextContextTokens = false;
+    // History length right after the last compaction. Automatic compaction
+    // waits for something new: a summary that is itself over the limit would
+    // otherwise be summarized again and again.
+    int                           m_messagesAfterCompaction = 0;
     int                           m_toolCallsThisTurn = 0;
     bool                          m_limitSignalEmitted = false;
 

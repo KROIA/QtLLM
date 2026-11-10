@@ -24,6 +24,8 @@ struct QT_LLM_API AgentConfig
     QString  systemPrompt;
     int      maxTokens  = 1024;
     double   costCapUsd = 0.0;            // 0 = unlimited
+    // Background work is usually simple; Effort::Low makes it cheaper and faster.
+    Effort   effort     = Effort::Default;
 };
 
 // A headless LLM conversation the user never sees.
@@ -123,5 +125,26 @@ private:
     QString            m_lastReply;
     QString            m_lastError;
 };
+
+// Lets the model of `client` delegate work: registers the tool "run_subagent".
+// Each call spawns an Agent from configProvider() (asked per call, so it can
+// follow the provider the user selected), gives it the task and returns its
+// answer as the tool result. Several calls in one response run side by side.
+//
+// A subagent starts with an empty conversation. With shareTools it gets the
+// tools `client` has at that moment (Client::shareToolsWith) - except
+// run_subagent itself, so agents cannot multiply, and the tools that need the
+// user in front of them (question card, dialogs, repeating tasks), which an
+// agent refuses anyway. onSpawn runs after that: the place to add or remove
+// tools and to connect to the agent's signals.
+//
+// The agent is a child of `client`, listed in AgentRegistry while it works and
+// deleted when it has answered. At most maxParallel run at a time; further
+// calls are refused with an error the model can react to.
+QT_LLM_API void registerSubagentTool(Client* client,
+                                     std::function<AgentConfig()> configProvider,
+                                     std::function<void(Agent*)> onSpawn = nullptr,
+                                     int maxParallel = 4,
+                                     bool shareTools = true);
 
 } // namespace QtLLM

@@ -13,6 +13,10 @@ struct QT_LLM_API UsageStats
     int    cacheReadInputTokens     = 0; // tokens read from prompt cache this turn
     int    toolCalls                = 0; // number of tool invocations within this turn
     qint64 durationMs               = 0; // wall-clock time from first HTTP send to final response
+    // Size of the conversation after this turn as the provider itself counted
+    // it: the last request's input (cached parts included) plus its answer.
+    // Exact and free - no extra request. 0 = the provider did not report it.
+    int    contextTokens            = 0;
 
     // Session totals (cumulative since construction or clearConversation)
     int    sessionInputTokens              = 0;

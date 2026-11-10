@@ -9,6 +9,8 @@
 #include <QDateTime>
 #include <QStringList>
 #include <QVariant>
+#include <QSignalBlocker>
+#include <QItemSelectionModel>
 
 namespace QtLLM {
 
@@ -28,6 +30,8 @@ QString stateText(Agent::State state)
 
 QString providerText(Provider provider)
 {
+    if (provider == Provider::ClaudeCode)
+        return QStringLiteral("claude-code");
     return provider == Provider::Ollama ? QStringLiteral("ollama")
                                         : QStringLiteral("claude");
 }
@@ -99,9 +103,13 @@ void AgentsWidget::refresh()
     m_table->setVisible(!agents.isEmpty());
     m_details->setVisible(!agents.isEmpty());
 
-    // Selection survives the rebuild, so the detail pane does not jump around
-    // while the user is reading it.
+    // Selection follows the agent, not the row index: when an agent above it
+    // is destroyed the rows shift, and a kept row index would silently show
+    // a different agent. Signals are blocked so the half-rebuilt table never
+    // reaches updateDetails().
     const Agent* previous = selectedAgent();
+    QSignalBlocker blocker(m_table);
+    m_table->selectionModel()->clear();
 
     m_table->setRowCount(agents.size());
     for (int row = 0; row < agents.size(); ++row) {
@@ -134,6 +142,7 @@ void AgentsWidget::refresh()
             m_table->selectRow(row);
     }
 
+    blocker.unblock();
     m_table->resizeColumnsToContents();
     updateDetails();
 }
@@ -165,7 +174,8 @@ void AgentsWidget::updateDetails()
 {
     Agent* agent = selectedAgent();
     if (!agent) {
-        m_details->clear();
+        if (!m_details->document()->isEmpty())
+            m_details->clear();
         return;
     }
 
@@ -193,7 +203,17 @@ void AgentsWidget::updateDetails()
         lines << tr("Last error: %1").arg(agent->lastError());
     }
 
-    m_details->setPlainText(lines.join(QStringLiteral("\n")));
+    // refresh() runs every second; resetting identical text would throw away
+    // the user's scroll position and selection each time. Compared against
+    // the source text, because toPlainText() does not round-trip "\r" or
+    // non-breaking spaces and would make every tick look like a change.
+    const QString text = lines.join(QStringLiteral("\n"));
+    const char* kShownText = "qtllmShownText";
+    if (m_details->property(kShownText).toString() != text
+        || m_details->document()->isEmpty()) {
+        m_details->setPlainText(text);
+        m_details->setProperty(kShownText, text);
+    }
 }
 
 } // namespace QtLLM

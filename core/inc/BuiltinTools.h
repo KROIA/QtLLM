@@ -25,6 +25,8 @@ enum class BuiltinTool
     CurrentDateTime,  // local + UTC time, timezone (models have no clock)
     SystemInfo,       // OS, Qt version, locale, app name, screen geometry
     OpenUrl,          // open a URL in the default browser/handler
+    Wait,             // pause for N seconds, then continue (asynchronous: the
+                      // application stays responsive, Cancel ends it)
     ListDirectory,    // list files/folders of a directory
     ReadTextFile,     // read a text file (size-capped)
     WriteTextFile,    // write/append a text file — gate with the consent hook

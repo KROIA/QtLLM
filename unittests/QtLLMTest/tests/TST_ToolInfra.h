@@ -6,7 +6,7 @@
 #include <QJsonArray>
 
 
-// Tests for the generic tool infrastructure (FeatureRequest QtLLM-Tool-API):
+// Tests for the generic tool infrastructure (see documentation/ToolUse.md):
 // enum parameters, validation, enable/disable, metadata, result helpers,
 // call cap and consent-hook API surface.
 class TST_ToolInfra : public UnitTest::Test

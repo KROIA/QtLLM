@@ -1,7 +1,10 @@
 #include "Agent.h"
 #include "AgentRegistry.h"
 #include "BuiltinTools.h"
+#include "Tool.h"
+#include "ToolResult.h"
 #include <QDateTime>
+#include <QPointer>
 #include <QStringList>
 
 namespace QtLLM {
@@ -62,6 +65,8 @@ Agent::Agent(const AgentConfig& config, QObject* parent)
         setMaxTokens(m_config.maxTokens);
     if (!m_config.systemPrompt.isEmpty())
         setSystemPrompt(m_config.systemPrompt);
+    if (m_config.effort != Effort::Default)
+        setEffort(m_config.effort);
 
     // Replaceable: an app that wants an agent to raise dialogs installs its own
     // handler afterwards.
@@ -213,7 +218,7 @@ void Agent::onModelsAvailable(const QStringList& models)
             }
         }
         // Running on an unexpected model still beats not running at all.
-        setModel(chosen.isEmpty() ? models.first() : chosen);
+        setModel(chosen.isEmpty() ? pickFallbackModel(provider(), models) : chosen);
     }
 
     dispatchNext();
@@ -236,6 +241,70 @@ void Agent::onStatsUpdated(const UsageStats& stats)
     setState(State::BudgetExceeded);
     emit budgetExceeded(m_spentUsd);
     drainQueue(QStringLiteral("agent budget exhausted"));
+}
+
+
+void registerSubagentTool(Client* client,
+                          std::function<AgentConfig()> configProvider,
+                          std::function<void(Agent*)> onSpawn,
+                          int maxParallel,
+                          bool shareTools)
+{
+    if (!client || !configProvider)
+        return;
+
+    Tool tool;
+    tool.setName("run_subagent")
+        .setTitle("Subagent")
+        .setStatusText("A subagent is working…")
+        .setDescription(
+            "Hand a self-contained task to a background agent and get its answer back. The "
+            "agent starts with an empty conversation and sees nothing of this chat, so put "
+            "everything it needs into 'task' and say what form the answer should have. It has "
+            "the same tools as you, except this one and those that ask the user. To run "
+            "tasks in parallel, call this tool several times in the same response. Use it for "
+            "side work that is independent of the conversation; do simple things yourself.")
+        .addParameter("task", "string", "The complete task, including all context needed.", true)
+        .addParameter("name", "string",
+                      "Short label for the agent, shown to the user (e.g. \"title-writer\").");
+
+    QPointer<Client> owner(client);
+    const QString toolName = tool.name();
+    client->registerAsyncTool(tool, [owner, configProvider, onSpawn, maxParallel, shareTools, toolName]
+                                    (const QJsonObject& input, ToolCompletion done) {
+        if (!owner)
+            return;
+        if (owner->findChildren<Agent*>(QString(), Qt::FindDirectChildrenOnly).size() >= maxParallel) {
+            done.finish(toolError(QStringLiteral("%1 subagents are already running; wait for "
+                                                 "their results first").arg(maxParallel)));
+            return;
+        }
+
+        AgentConfig config = configProvider();
+        const QString name = input.value("name").toString().trimmed();
+        if (!name.isEmpty())
+            config.name = name;
+        auto* agent = new Agent(config, owner);
+        if (shareTools) {
+            QStringList except{toolName};
+            for (const QString& offered : owner->toolNames()) {
+                if (requiresUserInterface(offered))
+                    except.append(offered);
+            }
+            owner->shareToolsWith(agent, except);
+        }
+        if (onSpawn)
+            onSpawn(agent);
+
+        agent->ask(input.value("task").toString(), [agent, done](const QString& text, bool ok) {
+            done.finish(ok ? toolOk({{"answer", text}}) : toolError(text));
+            agent->deleteLater();
+        });
+
+        // The turn can end without the agent: the call timed out, or the user
+        // cancelled. Nobody is waiting for the answer then, so stop paying for it.
+        QObject::connect(owner.data(), &Client::requestFinished, agent, &QObject::deleteLater);
+    });
 }
 
 } // namespace QtLLM

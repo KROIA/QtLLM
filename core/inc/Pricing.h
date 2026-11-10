@@ -109,7 +109,8 @@ private:
     static QString normalizeModel(const QString& model);
     static ModelPricing builtinPricing(const QString& normalizedModel);
     static ModelPricing lookup(const QMap<QString, ModelPricing>& table,
-                               const QString& normalizedModel);
+                               const QString& normalizedModel,
+                               bool substringPatterns);
 
     PricingResolver              m_resolver;
     QMap<QString, ModelPricing>  m_userTable;    // setPricing entries

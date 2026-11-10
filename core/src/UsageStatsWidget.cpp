@@ -15,6 +15,8 @@
 #include <QApplication>
 #include <QScrollBar>
 #include <QtMath>
+#include <cmath>
+#include <functional>
 
 namespace QtLLM {
 
@@ -135,7 +137,7 @@ UsageStatsWidget::~UsageStatsWidget() = default;
 void UsageStatsWidget::setUsageHistory(UsageHistory* history)
 {
     if (m_history)
-        disconnect(m_history, nullptr, this, nullptr);
+        disconnect(m_history.data(), nullptr, this, nullptr);
 
     // If an external history is supplied, drop the owned fallback.
     if (m_ownedHistory && history != m_ownedHistory) {
@@ -145,7 +147,7 @@ void UsageStatsWidget::setUsageHistory(UsageHistory* history)
 
     m_history = history;
     if (m_history) {
-        connect(m_history, &UsageHistory::sampleAppended,
+        connect(m_history.data(), &UsageHistory::sampleAppended,
                 this, &UsageStatsWidget::onSampleAppended);
     }
     rebuildModelFilter();
@@ -492,7 +494,7 @@ QColor UsageStatsWidget::modelColour(int index) const
     return isDark() ? kModelDark[index] : kModelLight[index];
 }
 
-QString UsageStatsWidget::humanTokens(int tokens)
+QString UsageStatsWidget::humanTokens(qint64 tokens)
 {
     if (tokens < 1000)
         return QString::number(tokens);
@@ -623,14 +625,14 @@ void UsageStatsWidget::paintChart(QPainter& p, const QRect& area)
     }
 
     // Find max Y
-    int maxY = 1;
+    qint64 maxY = 1;
     for (const ChartBucket& b : m_buckets) {
-        int val = b.totalTokens();
+        qint64 val = b.totalTokens();
         if (val > maxY) maxY = val;
     }
 
     // Round up to nice number
-    int magnitude = static_cast<int>(qPow(10, qFloor(qLn(maxY) / qLn(10))));
+    qint64 magnitude = static_cast<qint64>(qPow(10, qFloor(std::log10(static_cast<double>(maxY)))));
     if (magnitude < 1) magnitude = 1;
     maxY = ((maxY / magnitude) + 1) * magnitude;
 
@@ -648,7 +650,7 @@ void UsageStatsWidget::paintChart(QPainter& p, const QRect& area)
         int y = plotArea.bottom() - (plotArea.height() * i / 4);
         p.drawLine(plotArea.left(), y, plotArea.right(), y);
 
-        int val = maxY * i / 4;
+        qint64 val = maxY * i / 4;
         p.setPen(textColor);
         p.drawText(QRect(area.x(), y - 8, leftAxisWidth - 6, 16),
                    Qt::AlignRight | Qt::AlignVCenter, humanTokens(val));
@@ -669,7 +671,7 @@ void UsageStatsWidget::paintChart(QPainter& p, const QRect& area)
         bool hovered = (i == m_hoverBucket);
 
         if (m_colourBy == ColourBy::Category) {
-            int vals[kCategoryCount] = { b.uncachedInput, b.cacheRead, b.cacheWrite, b.output };
+            qint64 vals[kCategoryCount] = { b.uncachedInput, b.cacheRead, b.cacheWrite, b.output };
             for (int c = 0; c < kCategoryCount; ++c) {
                 if (vals[c] <= 0) continue;
                 int segH = static_cast<int>(static_cast<double>(vals[c]) / maxY * plotArea.height());
@@ -685,7 +687,7 @@ void UsageStatsWidget::paintChart(QPainter& p, const QRect& area)
             for (int mi = 0; mi < m_allModels.size(); ++mi) {
                 int colIdx = (mi < kMaxModelColours) ? mi : kMaxModelColours;
                 QString model = m_allModels[mi];
-                int val = b.perModel.value(model, 0);
+                qint64 val = b.perModel.value(model, 0);
                 if (val <= 0) continue;
                 int segH = static_cast<int>(static_cast<double>(val) / maxY * plotArea.height());
                 if (segH < 1) segH = 1;
@@ -833,12 +835,12 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
     }
 
     // Find max Y
-    int maxY = 1;
+    qint64 maxY = 1;
     for (const ChartBucket& b : m_buckets) {
-        int val = b.totalTokens();
+        qint64 val = b.totalTokens();
         if (val > maxY) maxY = val;
     }
-    int magnitude = static_cast<int>(qPow(10, qFloor(qLn(maxY) / qLn(10))));
+    qint64 magnitude = static_cast<qint64>(qPow(10, qFloor(std::log10(static_cast<double>(maxY)))));
     if (magnitude < 1) magnitude = 1;
     maxY = ((maxY / magnitude) + 1) * magnitude;
 
@@ -855,7 +857,7 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
     for (int i = 1; i <= 4; ++i) {
         int y = plotArea.bottom() - (plotArea.height() * i / 4);
         p.drawLine(plotArea.left(), y, plotArea.right(), y);
-        int val = maxY * i / 4;
+        qint64 val = maxY * i / 4;
         p.setPen(textColor);
         p.drawText(QRect(area.x(), y - 8, leftAxisWidth - 6, 16),
                    Qt::AlignRight | Qt::AlignVCenter, humanTokens(val));
@@ -869,13 +871,13 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
         if (numBuckets <= 1) return plotArea.center().x();
         return plotArea.x() + i * stepX;
     };
-    auto yForValue = [&](int val) -> double {
+    auto yForValue = [&](qint64 val) -> double {
         return plotArea.bottom() - static_cast<double>(val) / maxY * plotArea.height();
     };
 
     if (m_colourBy == ColourBy::Category) {
         // Draw 4 polylines: uncached, cacheRead, cacheWrite, output
-        auto drawLine = [&](int catIdx, std::function<int(const ChartBucket&)> valueFn) {
+        auto drawLine = [&](int catIdx, std::function<qint64(const ChartBucket&)> valueFn) {
             if (numBuckets < 1) return;
             QPainterPath path;
             path.moveTo(xForBucket(0), yForValue(valueFn(m_buckets[0])));
@@ -901,7 +903,7 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
             QPainterPath path;
             bool started = false;
             for (int i = 0; i < numBuckets; ++i) {
-                int val = m_buckets[i].perModel.value(model, 0);
+                qint64 val = m_buckets[i].perModel.value(model, 0);
                 double px = xForBucket(i);
                 double py = yForValue(val);
                 if (!started) { path.moveTo(px, py); started = true; }
@@ -919,7 +921,7 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
         p.setPen(Qt::NoPen);
         double hx = xForBucket(m_hoverBucket);
         if (m_colourBy == ColourBy::Category) {
-            int vals[kCategoryCount] = {
+            qint64 vals[kCategoryCount] = {
                 m_buckets[m_hoverBucket].uncachedInput,
                 m_buckets[m_hoverBucket].cacheRead,
                 m_buckets[m_hoverBucket].cacheWrite,
@@ -932,7 +934,7 @@ void UsageStatsWidget::paintLineChart(QPainter& p, const QRect& area)
         } else {
             for (int mi = 0; mi < m_allModels.size() && mi <= kMaxModelColours; ++mi) {
                 int colIdx = (mi < kMaxModelColours) ? mi : kMaxModelColours;
-                int val = m_buckets[m_hoverBucket].perModel.value(m_allModels[mi], 0);
+                qint64 val = m_buckets[m_hoverBucket].perModel.value(m_allModels[mi], 0);
                 p.setBrush(modelColour(colIdx));
                 p.drawEllipse(QPointF(hx, yForValue(val)), 4, 4);
             }

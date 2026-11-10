@@ -1,5 +1,7 @@
 #include "ChatWindow.h"
 #include "ModelManagerDialog.h"
+#include <QAction>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -29,7 +31,12 @@ static const char* kDefaultSystemPrompt =
     "You have access to a tool that lets you change the application window title. "
     "Use it when the user asks you to rename or retitle the window. "
     "When you need the user to decide something, use the ask_user_question tool "
-    "to show them an interactive form instead of asking in plain text.";
+    "to show them an interactive form instead of asking in plain text. "
+    "You can look at this application's window and draw on it with the ui_* tools. "
+    "When the user asks where something is or how to do something, show it - outline "
+    "the control or attach a speech bubble to it - instead of only describing it. "
+    "Find widget ids with ui_find_widgets or ui_get_widget_tree before pointing at anything, "
+    "and keep the text inside bubbles to one or two sentences.";
 
 ChatWindow::ChatWindow(const QString& apiKey,
                        const QString& endpointUrl,
@@ -46,7 +53,7 @@ ChatWindow::ChatWindow(const QString& apiKey,
     , m_client(apiKey, endpointUrl, this)
 {
     setWindowTitle("QtLLM Chat");
-    resize(960, 660);
+    resize(1180, 700);
 
     buildUi();
     registerTools();
@@ -80,7 +87,7 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
     , m_client(provider, endpointUrl, apiKey, this)
 {
     setWindowTitle("QtLLM Chat");
-    resize(960, 660);
+    resize(1180, 700);
 
     buildUi();
     registerTools();
@@ -93,8 +100,10 @@ ChatWindow::ChatWindow(QtLLM::Provider provider,
     m_client.setMaxTokens(1024);
     m_client.setSystemPrompt(m_systemPrompt);
 
-    if (m_isOllama)
+    if (m_isOllama) {
+        m_settingsProvider = QtLLM::SettingsDialog::Provider::Ollama;
         initOllamaIfNeeded();
+    }
 }
 
 ChatWindow::~ChatWindow() = default;
@@ -116,6 +125,8 @@ void ChatWindow::buildUi()
 
     // Stats panel as central widget
     auto* statsBox = new QGroupBox("Usage Statistics", this);
+    statsBox->setObjectName("usageStatistics");   // stable ids for the assistant's ui_* tools
+    m_statsBox = statsBox;
     statsBox->setFixedWidth(210);
     auto* grid = new QGridLayout(statsBox);
     grid->setSpacing(4);
@@ -157,8 +168,11 @@ void ChatWindow::buildUi()
     auto* centralLayout = new QHBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->addWidget(statsBox);
-    centralLayout->addWidget(buildAgentDemoPanel(), 1);
+    centralLayout->addWidget(m_demoBox = buildFeatureDemoPanel());
+    centralLayout->addWidget(m_agentBox = buildAgentDemoPanel(), 1);
     setCentralWidget(central);
+
+    buildToolBar();
 
     // Ollama model toolbar
     if (m_isOllama) {
@@ -193,9 +207,178 @@ void ChatWindow::buildUi()
 // opposite — it puts text into the chat as if the user had typed it.
 // ---------------------------------------------------------------------------
 
+// One button per feature. A click does nothing but place a request in the chat
+// (ChatDockWidget::submitPrompt), exactly as if the user had typed it - what
+// happens next is the assistant using the library's tools.
+QWidget* ChatWindow::buildFeatureDemoPanel()
+{
+    auto* box = new QGroupBox("Assistant Demos", this);
+    box->setObjectName("assistantDemos");
+    box->setFixedWidth(330);
+    auto* layout = new QGridLayout(box);
+    layout->setSpacing(4);
+
+    auto* hint = new QLabel("Each button sends a ready-made request to the assistant, "
+                            "as if you had typed it. Hover to read it.", box);
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #777;");
+    layout->addWidget(hint, 0, 0, 1, 2);
+
+    struct Demo
+    {
+        const char* section;   // starts a new group when it changes
+        const char* name;      // objectName
+        const char* label;
+        const char* prompt;
+    };
+    static const Demo demos[] = {
+        {"Point at things", "demoHighlight", "Outline a control",
+         "Draw a border around the 'Usage Statistics' panel of this window so I can see where "
+         "it is, and tell me in one sentence what it shows."},
+        {"Point at things", "demoBlink", "Blinking outline",
+         "Make the 'Kill agent' button stand out with a blinking outline for 8 seconds."},
+        {"Point at things", "demoShapes", "Arrow and circle",
+         "Draw an arrow that points at the 'Agent Demo' panel and an ellipse around the "
+         "'Usage Statistics' panel, in two different colours. Remove both after 10 seconds."},
+        {"Point at things", "demoSpotlight", "Spotlight",
+         "Put a spotlight on the 'Agent Demo' panel for 6 seconds, so everything else is dimmed."},
+
+        {"Explain in place", "demoBubble", "Speech bubble",
+         "Show a speech bubble that points at the 'Usage Statistics' panel and explains in two "
+         "sentences what the numbers mean."},
+        {"Explain in place", "demoNumbered", "Numbered bubbles",
+         "Explain this window with numbered speech bubbles that are all visible at once: one "
+         "for the 'Usage Statistics' panel, one for the 'Assistant Demos' panel and one for the "
+         "'Agent Demo' panel."},
+        {"Explain in place", "demoTour", "Guided tour",
+         "Give me a guided tour of this window, one step at a time with Back and Next: the "
+         "statistics, the demo buttons, the agent buttons and the agent log."},
+
+        {"Look at the application", "demoLook", "What is on screen?",
+         "Look at the widgets of this window and tell me briefly what I can do here."},
+        {"Look at the application", "demoScreenshot", "Screenshot",
+         "Take a screenshot of this window and describe what you see in three sentences."},
+        {"Look at the application", "demoActions", "Menus and actions",
+         "List the menu and toolbar actions this window offers."},
+        {"Look at the application", "demoRead", "Read a value",
+         "Read the estimated session cost from the 'Usage Statistics' panel and tell me what it is."},
+
+        {"Operate and restyle", "demoAction", "Toolbar action",
+         "Use the toolbar action that hides the 'Usage Statistics' panel, then tell me in one "
+         "sentence how I can bring it back."},
+        {"Operate and restyle", "demoColors", "Colour widgets",
+         "Give the 'Agent Demo' panel a light yellow background and the 'Kill agent' button a "
+         "red border."},
+        {"Operate and restyle", "demoRestoreColors", "Restore colours",
+         "Give every widget whose colours you changed its original colours back."},
+        {"Operate and restyle", "demoDarkTheme", "Dark theme",
+         "Switch this application to its dark theme."},
+        {"Operate and restyle", "demoThemes", "Default theme",
+         "Which colour themes does this application offer? Switch back to the default one."},
+
+        {"Delegate", "demoSubagents", "Two subagents",
+         "Start two subagents at the same time: one invents a short, playful title for this "
+         "window, the other writes a haiku about desktop software. Then set the window title to "
+         "the first result and show me the haiku."},
+
+        {"Ask and tidy up", "demoQuestion", "Ask me a question",
+         "Ask me which of three accent colours I prefer, using a question card, then confirm my choice."},
+        {"Ask and tidy up", "demoClear", "Remove all markers",
+         "Remove every highlight, shape and speech bubble you have drawn."},
+    };
+
+    const char* section = nullptr;
+    int row = 1, column = 0;   // two buttons per row; a section starts a new row
+    for (const Demo& demo : demos) {
+        if (!section || qstrcmp(section, demo.section) != 0) {
+            section = demo.section;
+            if (column != 0) { column = 0; ++row; }
+            auto* header = new QLabel(QString("<b>%1</b>").arg(section), box);
+            header->setContentsMargins(0, 6, 0, 0);
+            layout->addWidget(header, row++, 0, 1, 2);
+        }
+        auto* button = new QPushButton(demo.label, box);
+        button->setObjectName(demo.name);
+        button->setToolTip(demo.prompt);
+        const QString prompt = QString::fromUtf8(demo.prompt);
+        connect(button, &QPushButton::clicked, this, [this, prompt]() {
+            // Refused while an answer is still on its way.
+            if (!m_chatDock->submitPrompt(prompt))
+                m_chatDock->setStatusText("The assistant is still answering - try again when it is done.");
+        });
+        layout->addWidget(button, row, column);
+        if (++column == 2) { column = 0; ++row; }
+    }
+    layout->setRowStretch(row + 1, 1);
+    return box;
+}
+
+void ChatWindow::buildToolBar()
+{
+    auto* bar = addToolBar("Main");
+    bar->setObjectName("mainToolBar");
+    bar->setMovable(false);
+    bar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+    // Object names are the ids the assistant uses with ui_trigger_action.
+    auto add = [&](const char* name, const QString& text, const QString& tip) {
+        QAction* action = bar->addAction(text);
+        action->setObjectName(name);
+        action->setToolTip(tip);
+        return action;
+    };
+    auto addPanelToggle = [&](const char* name, const QString& text, QWidget* panel) {
+        QAction* action = add(name, text, QString("Show or hide the '%1' panel").arg(text));
+        action->setCheckable(true);
+        action->setChecked(true);
+        connect(action, &QAction::toggled, panel, &QWidget::setVisible);
+    };
+
+    QAction* save = add("actionSaveConversation", "Save conversation…",
+                        "Save the conversation as a JSON file");
+    save->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
+    save->setShortcut(QKeySequence::Save);
+    connect(save, &QAction::triggered, this, &ChatWindow::saveConversation);
+
+    QAction* settings = add("actionSettings", "Settings…",
+                            "Provider, model, context management and tools");
+    settings->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    connect(settings, &QAction::triggered, this, &ChatWindow::openSettings);
+
+    bar->addSeparator();
+    addPanelToggle("actionShowStatistics", "Usage Statistics", m_statsBox);
+    addPanelToggle("actionShowDemos", "Assistant Demos", m_demoBox);
+    addPanelToggle("actionShowAgentDemo", "Agent Demo", m_agentBox);
+
+    bar->addSeparator();
+    m_darkThemeAction = add("actionDarkTheme", "Dark theme",
+                            "Switch between the default and the dark theme");
+    m_darkThemeAction->setCheckable(true);
+    connect(m_darkThemeAction, &QAction::toggled, this, [this](bool dark) {
+        const QString theme = dark ? "dark" : "default";
+        if (m_appInterface->currentTheme() != theme)
+            m_appInterface->setTheme(theme);
+    });
+
+    bar->addSeparator();
+    QAction* clearMarkers = add("actionClearMarkers", "Clear markers",
+                                "Remove every highlight, shape and speech bubble");
+    clearMarkers->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
+    connect(clearMarkers, &QAction::triggered, this, [this]() { m_appInterface->clearGuidance(); });
+
+    QAction* restoreColors = add("actionRestoreColors", "Restore colours",
+                                 "Give recoloured widgets their original colours back");
+    restoreColors->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    connect(restoreColors, &QAction::triggered, this, [this]() { m_appInterface->resetWidgetColors(); });
+
+    QAction* resetTitle = add("actionResetTitle", "Reset title", "Set the window title back");
+    connect(resetTitle, &QAction::triggered, this, [this]() { setWindowTitle("QtLLM Chat"); });
+}
+
 QWidget* ChatWindow::buildAgentDemoPanel()
 {
     auto* box = new QGroupBox("Agent Demo", this);
+    box->setObjectName("agentDemo");
     auto* layout = new QVBoxLayout(box);
 
     auto* injectBtn  = new QPushButton("Inject prompt into chat", box);
@@ -205,6 +388,7 @@ QWidget* ChatWindow::buildAgentDemoPanel()
     auto* titleBtn   = new QPushButton("Agent: suggest window title", box);
     auto* moodBtn    = new QPushButton("Agent: rate the last reply", box);
     m_killAgentBtn   = new QPushButton("Kill agent", box);
+    m_killAgentBtn->setObjectName("killAgentButton");
 
     layout->addWidget(injectBtn);
 
@@ -289,19 +473,8 @@ QtLLM::Agent* ChatWindow::demoAgent()
     if (m_demoAgent)
         return m_demoAgent;
 
-    QtLLM::AgentConfig config;
-    config.name         = "demo-helper";
-    config.provider     = m_isOllama ? QtLLM::Provider::Ollama : QtLLM::Provider::Claude;
-    config.url          = m_endpointUrl;
-    config.apiKey       = m_apiKey;
-    config.model        = m_currentModel;
-    // If the configured model has been retired, or the endpoint simply does not
-    // offer it, the agent works down this list instead of failing the task.
-    config.fallbackModels = m_isOllama
-        ? QStringList{ "llama3.2", "llama3", "mistral" }
-        : QStringList{ "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5" };
+    QtLLM::AgentConfig config = agentConfig("demo-helper");
     config.maxTokens    = 200;
-    config.costCapUsd   = 0.25;   // demo safety net; the agent stops sending past this
     config.systemPrompt = "You are a background helper inside a desktop application. "
                           "The user never sees this conversation. Answer in one short "
                           "sentence, plain text, no preamble and no markdown.";
@@ -323,10 +496,29 @@ QtLLM::Agent* ChatWindow::demoAgent()
     logAgent(QString("Spawned agent \"%1\" on %2 / %3. It is listed in Settings > Agents "
                      "for as long as it lives.")
                  .arg(config.name,
-                      m_isOllama ? "ollama" : "claude",
+                      m_isOllama ? "ollama"
+                          : m_client.provider() == QtLLM::Provider::ClaudeCode ? "claude-code" : "claude",
                       config.model));
     updateAgentStatus();
     return m_demoAgent;
+}
+
+QtLLM::AgentConfig ChatWindow::agentConfig(const QString& name) const
+{
+    QtLLM::AgentConfig config;
+    config.name         = name;
+    // Same provider as the chat: local, API key / Foundry, or the subscription.
+    config.provider     = m_client.provider();
+    config.url          = m_endpointUrl;
+    config.apiKey       = m_apiKey;
+    config.model        = m_currentModel;
+    // If the configured model has been retired, or the endpoint simply does not
+    // offer it, the agent works down this list instead of failing the task.
+    config.fallbackModels = m_isOllama
+        ? QStringList{ "llama3.2", "llama3", "mistral" }
+        : QStringList{ "claude-sonnet-5-5", "claude-haiku-5-5" };
+    config.costCapUsd   = 0.25;   // demo safety net; the agent stops sending past this
+    return config;
 }
 
 
@@ -412,7 +604,9 @@ void ChatWindow::registerTools()
 
     QtLLM::Tool timerTool;
     timerTool.setName("timer")
-              .setDescription("Sets a timer that will go off after a specified number of milliseconds. ")
+              .setDescription("Starts a timer and returns at once. When it goes off, a message with "
+                              "the timer's id arrives in the main chat. To pause before continuing "
+                              "- for instance inside a subagent - use the wait tool instead.")
               .addParameter("duration", "integer", "The timer duration in milliseconds.", true)
               .addParameter("id", "string", "An ID for the timer instance that gets sent as a response to the model when the timer has finished. Make an ID up.", true);
     m_client.registerTool(timerTool, [this](const QJsonObject& args) -> QJsonObject {
@@ -436,6 +630,8 @@ void ChatWindow::registerTools()
           QtLLM::BuiltinTool::CurrentDateTime,
           QtLLM::BuiltinTool::ClipboardWrite,
           QtLLM::BuiltinTool::OpenUrl,
+          // Pause for N seconds without blocking the application.
+          QtLLM::BuiltinTool::Wait,
           // Filesystem tools show a built-in consent dialog on every call
           // ("Allow for the rest of this session" available).
           QtLLM::BuiltinTool::ListDirectory,
@@ -445,6 +641,60 @@ void ChatWindow::registerTools()
           // chat/status output without token cost.
           QtLLM::BuiltinTool::RepeatingTask },
         { m_chatDock, this });
+
+    // Lets the assistant look at this window, operate it and point things out
+    // to the user. Every capability is an explicit opt-in; what is left out
+    // here (writing properties, changing layouts) the model cannot do at all.
+    m_appInterface = new QtLLM::AppInterface(&m_client, this, this);
+    using Cap = QtLLM::AppInterface::Capability;
+    m_appInterface->setCapabilities(
+          Cap::ReadActions | Cap::TriggerActions          // menus and toolbars
+        | Cap::ReadWidgets | Cap::ReadProperties          // what is on screen
+        | Cap::Screenshots                                // see it (vision models)
+        | Cap::Highlights | Cap::Shapes | Cap::Animations // point at things
+        | Cap::SpeechBubbles | Cap::Tours                 // explain in place
+        | Cap::WidgetColors | Cap::Themes);               // restyle
+    // Markers and recoloured widgets belong to the conversation that made them.
+    connect(m_chatDock, &QtLLM::ChatDockWidget::clearContextRequested,
+            m_appInterface, &QtLLM::AppInterface::clearGuidance);
+    connect(m_chatDock, &QtLLM::ChatDockWidget::clearContextRequested,
+            m_appInterface, &QtLLM::AppInterface::resetWidgetColors);
+
+    // Themes: the assistant can switch between the registered ones and nothing
+    // else. registerStandardThemes() adds "default" (the look right now) and
+    // "dark"; an application adds its own with registerTheme().
+    m_appInterface->registerStandardThemes();
+    connect(m_appInterface, &QtLLM::AppInterface::themeChanged, this, [this](const QString& name) {
+        m_darkThemeAction->setChecked(name == "dark");
+    });
+
+    // run_subagent: the assistant hands side tasks to background agents that
+    // run on the chat's provider and have the chat's tools (all registered
+    // above; the ones that need the user are left out). They show up in the
+    // Agent Demo log and, while they work, in Settings > Agents.
+    QtLLM::registerSubagentTool(&m_client,
+        [this]() {
+            QtLLM::AgentConfig config = agentConfig("subagent");
+            config.maxTokens    = 400;
+            config.systemPrompt = "You are a subagent working on one task for another assistant. "
+                                  "Reply with the result only: plain text, no preamble.";
+            return config;
+        },
+        [this](QtLLM::Agent* agent) {
+            const QString name = agent->config().name;
+            connect(agent, &QtLLM::Client::requestStarted, this, [this, agent, name]() {
+                logAgent(QString("[subagent %1] task: %2").arg(name, agent->lastPrompt()));
+            });
+            connect(agent, &QtLLM::Client::toolInvoked, this, [this, name](const QString& tool, const QJsonObject&) {
+                logAgent(QString("[subagent %1] calls %2").arg(name, tool));
+            });
+            connect(agent, &QtLLM::Client::responseReady, this, [this, name](const QString& text) {
+                logAgent(QString("[subagent %1] %2").arg(name, text));
+            });
+            connect(agent, &QtLLM::Client::errorOccurred, this, [this, name](const QString& message) {
+                logAgent(QString("[subagent %1] failed: %2").arg(name, message));
+            });
+        });
 }
 
 void ChatWindow::connectSignals()
@@ -463,92 +713,13 @@ void ChatWindow::connectSignals()
 
     connect(m_chatDock, &QtLLM::ChatDockWidget::messageSent,    this, &ChatWindow::onSendClicked);
     connect(m_chatDock, &QtLLM::ChatDockWidget::cancelRequested, this, [this]() {
+        // Actually stop the turn; hiding the spinner alone left the request
+        // running and its answer (and tool calls) arriving anyway.
+        m_client.cancelRequest();
         m_chatDock->setLoading(false);
     });
-    connect(m_chatDock, &QtLLM::ChatDockWidget::saveConversationRequested, this, [this]() {
-        QString defaultName = QString("conversation_%1.json")
-            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-        QString path = QFileDialog::getSaveFileName(
-            this, QString::fromUtf16(u"Konversation speichern"), defaultName, "JSON (*.json)");
-        if (path.isEmpty())
-            return;
-        QFile file(path);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            m_chatDock->setStatusText(QString::fromUtf16(u"Fehler beim Speichern: %1").arg(file.errorString()));
-            return;
-        }
-        QJsonDocument doc(m_client.exportConversation());
-        file.write(doc.toJson(QJsonDocument::Indented));
-        file.close();
-        m_chatDock->setStatusText(QString::fromUtf16(u"Konversation gespeichert: %1").arg(QFileInfo(path).fileName()));
-    });
-    connect(m_chatDock, &QtLLM::ChatDockWidget::settingsRequested, this, [this]() {
-        QtLLM::SettingsDialog dlg(this);
-        dlg.setModel(m_currentModel);
-        dlg.setSystemPrompt(m_systemPrompt);
-
-        // Populate BOTH providers' fields (not just the active one) so
-        // switching the Provider combo restores whatever was last configured
-        // for the other provider instead of the field's hardcoded default.
-        dlg.setApiKey(m_savedClaudeApiKey);
-        dlg.setEndpointUrl(m_savedClaudeEndpointUrl);
-        dlg.setOllamaUrl(m_savedOllamaUrl);
-        dlg.setProvider(m_isOllama ? QtLLM::SettingsDialog::Provider::Ollama
-                                   : QtLLM::SettingsDialog::Provider::Claude);
-        dlg.setFontSizePercent(m_fontSizePercent);
-        dlg.setShowToolCalls(m_chatDock->showToolCalls());
-
-        // Wire usage history so the statistics tab shows live data
-        dlg.setUsageHistory(m_client.usageHistory());
-
-        // Tools tab: list registered tools, enable/disable applied on Apply
-        dlg.setClient(&m_client);
-
-        // Model fetching is fully self-contained inside SettingsDialog (it
-        // queries whichever provider/credentials are currently typed into
-        // its own fields), so no wiring is needed here. Previously this also
-        // connected detectModelsRequested -> m_client.fetchAvailableModels(),
-        // which always queried the live Client's current (not-yet-applied)
-        // provider and merged its models into the combo alongside the
-        // correct ones.
-
-        connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
-            m_currentModel = dlg.model();
-            m_systemPrompt = dlg.systemPrompt();
-            m_fontSizePercent = dlg.fontSizePercent();
-            m_chatDock->setFontSizePercent(m_fontSizePercent);
-            m_chatDock->setShowToolCalls(dlg.showToolCalls());
-            QSettings().setValue(kShowToolCallsKey, dlg.showToolCalls());
-            QSettings().setValue(kModelKey, m_currentModel);
-
-            // Persist both providers' fields in RAM regardless of which is
-            // active, so switching back later restores exactly what was
-            // last configured instead of a hardcoded default.
-            m_savedClaudeApiKey      = dlg.apiKey();
-            m_savedClaudeEndpointUrl = dlg.endpointUrl();
-            m_savedOllamaUrl         = dlg.ollamaUrl();
-
-            bool wantOllama = (dlg.provider() == QtLLM::SettingsDialog::Provider::Ollama);
-            m_endpointUrl = wantOllama ? m_savedOllamaUrl : m_savedClaudeEndpointUrl;
-            m_apiKey      = wantOllama ? QString() : m_savedClaudeApiKey;
-
-            if (wantOllama != m_isOllama) {
-                m_isOllama = wantOllama;
-                m_client.setProvider(wantOllama ? QtLLM::Provider::Ollama : QtLLM::Provider::Claude,
-                                     m_endpointUrl, m_apiKey);
-                m_chatDock->clearMessages();
-            } else if (wantOllama) {
-                m_client.setEndpointUrl(m_endpointUrl);
-            } else {
-                m_client.setApiKey(m_apiKey);
-                m_client.setEndpointUrl(m_endpointUrl);
-            }
-
-            m_client.setModel(m_currentModel);
-            m_client.setSystemPrompt(m_systemPrompt);
-        });
-        dlg.exec();
-    });
+    connect(m_chatDock, &QtLLM::ChatDockWidget::saveConversationRequested, this, &ChatWindow::saveConversation);
+    connect(m_chatDock, &QtLLM::ChatDockWidget::settingsRequested, this, &ChatWindow::openSettings);
 
     connect(&m_client,  &QtLLM::Client::responseReady,   this, &ChatWindow::onResponseReady);
     connect(&m_client,  &QtLLM::Client::toolInvoked,     this, &ChatWindow::onToolInvoked);
@@ -562,6 +733,100 @@ void ChatWindow::connectSignals()
                 this, &ChatWindow::onModelComboChanged);
     if (m_modelsBtn)
         connect(m_modelsBtn, &QPushButton::clicked, this, &ChatWindow::onManageModelsClicked);
+}
+
+void ChatWindow::saveConversation()
+{
+    QString defaultName = QString("conversation_%1.json")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    QString path = QFileDialog::getSaveFileName(
+        this, QString::fromUtf16(u"Konversation speichern"), defaultName, "JSON (*.json)");
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_chatDock->setStatusText(QString::fromUtf16(u"Fehler beim Speichern: %1").arg(file.errorString()));
+        return;
+    }
+    QJsonDocument doc(m_client.exportConversation());
+    file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+    m_chatDock->setStatusText(QString::fromUtf16(u"Konversation gespeichert: %1").arg(QFileInfo(path).fileName()));
+}
+
+void ChatWindow::openSettings()
+{
+    QtLLM::SettingsDialog dlg(this);
+    dlg.setModel(m_currentModel);
+    dlg.setSystemPrompt(m_systemPrompt);
+
+    // Populate BOTH providers' fields (not just the active one) so
+    // switching the Provider combo restores whatever was last configured
+    // for the other provider instead of the field's hardcoded default.
+    dlg.setApiKey(m_savedClaudeApiKey);
+    dlg.setEndpointUrl(m_savedClaudeEndpointUrl);
+    dlg.setOllamaUrl(m_savedOllamaUrl);
+    dlg.setFoundryApiKey(m_savedFoundryApiKey);
+    dlg.setFoundryEndpointUrl(m_savedFoundryUrl);
+    dlg.setProvider(m_settingsProvider);
+    dlg.setModel(m_currentModel);   // setProvider() reset the model field
+    dlg.setFontSizePercent(m_fontSizePercent);
+    dlg.setShowToolCalls(m_chatDock->showToolCalls());
+
+    // Wire usage history so the statistics tab shows live data
+    dlg.setUsageHistory(m_client.usageHistory());
+
+    // Tools tab: list registered tools, enable/disable applied on Apply
+    dlg.setClient(&m_client);
+
+    // Model fetching is fully self-contained inside SettingsDialog (it
+    // queries whichever provider/credentials are currently typed into
+    // its own fields), so no wiring is needed here. Previously this also
+    // connected detectModelsRequested -> m_client.fetchAvailableModels(),
+    // which always queried the live Client's current (not-yet-applied)
+    // provider and merged its models into the combo alongside the
+    // correct ones.
+
+    connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
+        m_currentModel = dlg.model();
+        m_systemPrompt = dlg.systemPrompt();
+        m_fontSizePercent = dlg.fontSizePercent();
+        m_chatDock->setFontSizePercent(m_fontSizePercent);
+        m_chatDock->setShowToolCalls(dlg.showToolCalls());
+        QSettings().setValue(kShowToolCallsKey, dlg.showToolCalls());
+        QSettings().setValue(kModelKey, m_currentModel);
+
+        // Persist both providers' fields in RAM regardless of which is
+        // active, so switching back later restores exactly what was
+        // last configured instead of a hardcoded default.
+        m_savedClaudeApiKey      = dlg.apiKey();
+        m_savedClaudeEndpointUrl = dlg.endpointUrl();
+        m_savedOllamaUrl         = dlg.ollamaUrl();
+        m_savedFoundryApiKey     = dlg.foundryApiKey();
+        m_savedFoundryUrl        = dlg.foundryEndpointUrl();
+        m_settingsProvider       = dlg.provider();
+
+        // Kept for the agent demo, which spawns with the chat's credentials.
+        switch (m_settingsProvider) {
+        case QtLLM::SettingsDialog::Provider::Ollama:
+            m_endpointUrl = m_savedOllamaUrl;         m_apiKey.clear();                 break;
+        case QtLLM::SettingsDialog::Provider::Foundry:
+            m_endpointUrl = m_savedFoundryUrl;        m_apiKey = m_savedFoundryApiKey;  break;
+        case QtLLM::SettingsDialog::Provider::Claude:
+            m_endpointUrl = m_savedClaudeEndpointUrl; m_apiKey = m_savedClaudeApiKey;   break;
+        case QtLLM::SettingsDialog::Provider::ClaudeSubscription:
+            m_endpointUrl.clear();                    m_apiKey.clear();                 break;
+        }
+
+        // One call covers provider switch, credentials, model and system
+        // prompt. A provider switch starts a new conversation.
+        const QtLLM::Provider before = m_client.provider();
+        dlg.applyTo(&m_client);
+        m_isOllama = (m_client.provider() == QtLLM::Provider::Ollama);
+        if (m_client.provider() != before)
+            m_chatDock->clearMessages();
+    });
+    dlg.exec();
 }
 
 void ChatWindow::initOllamaIfNeeded()

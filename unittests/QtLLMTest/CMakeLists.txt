@@ -6,6 +6,27 @@
 
 ## USER_SECTION_START 1
 
+## Every test class is a header included by main.cpp, so that one object
+## file outgrows the default section limit of the MSVC object format.
+if(MSVC)
+    add_compile_options(/bigobj)
+endif()
+
+## GUI test driver of the UnitTest library (click and type widgets by
+## objectName). It ships with the UnitTest sources but is compiled only by a
+## test target that asks for it - the UnitTest library itself stays Qt-free.
+if(TARGET UnitTest_static)
+    get_target_property(UNITTEST_CORE_DIR UnitTest_static SOURCE_DIR)
+endif()
+if(EXISTS "${UNITTEST_CORE_DIR}/src/gui/UnitTest_Gui.cpp")
+    include_directories("${UNITTEST_CORE_DIR}/inc/gui")
+    list(APPEND ADDITONAL_SOURCES "${UNITTEST_CORE_DIR}/src/gui/UnitTest_Gui.cpp")
+    add_definitions(-DUNITTEST_GUI_ENABLED)
+else()
+    message(WARNING "UnitTest GUI driver not found - the GUI tests (TST_Gui) are skipped. "
+                    "Update the UnitTest dependency (git pull in its cached source folder).")
+endif()
+
 ## USER_SECTION_END
 
 ## Override the QT_MODULES if you want to use other modules. 

@@ -238,6 +238,31 @@ void registerCurrentDateTime(Client* client)
     });
 }
 
+void registerWait(Client* client)
+{
+    const double maxSeconds = 300.0;
+    Tool tool;
+    tool.setName("wait")
+        .setDescription(
+            "Pause for a number of seconds, then continue. Use it when you are asked to wait, "
+            "or to give the application time after starting something that takes a moment, "
+            "before you look at the result. Returns when the time is over.")
+        .setTitle("Wait")
+        .setGroup("System")
+        .setStatusText("Waiting…")
+        .setReadOnly(true)
+        .setTimeoutMs(int(maxSeconds * 1000) + 10000)
+        .addParameter("seconds", "number", "How long to wait, 0.1 to 300.", true);
+
+    client->registerAsyncTool(tool, [maxSeconds](const QJsonObject& input, ToolCompletion done) {
+        // toVariant(): "30" from a model that sends numbers as text still counts.
+        const double seconds = qBound(0.1, input.value("seconds").toVariant().toDouble(), maxSeconds);
+        QTimer::singleShot(int(seconds * 1000), qApp, [done, seconds]() {
+            done.finish(toolOk({{"waited_seconds", seconds}}));
+        });
+    });
+}
+
 void registerSystemInfo(Client* client)
 {
     Tool tool;
@@ -334,15 +359,19 @@ void registerListDirectory(Client* client, QWidget* dialogParent, bool confirm)
     tool.setName("list_directory")
         .setDescription(
             "List the files and subfolders of a directory. Returns name, type "
-            "('file'/'dir') and size in bytes per entry; at most 500 entries "
-            "('truncated' is true when more exist).")
+            "('file'/'dir') and size in bytes per entry, 'limit' entries at a "
+            "time (default 200). When 'truncated' is true, call again with "
+            "'offset' set to the returned 'nextOffset' to get the rest.")
         .setTitle("List directory")
         .setGroup("Filesystem")
         .setStatusText("Listing directory…")
         .addParameter("path", "string", "Absolute directory path.", true)
         .addParameter("nameFilter", "string",
                       "Optional wildcard filter for file names, e.g. \"*.txt\".",
-                      false);
+                      false)
+        .addParameter("offset", "integer", "Index of the first entry to return (default 0).", false)
+        .addParameter("limit", "integer", "Maximum number of entries (default 200, at most 500).", false)
+        .setReadOnly(true);
 
     QPointer<QWidget> parent(dialogParent);
     client->registerTool(tool, [parent, confirm](const QJsonObject& args) -> QJsonObject {
@@ -363,18 +392,23 @@ void registerListDirectory(Client* client, QWidget* dialogParent, bool confirm)
             nameFilters, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
             QDir::DirsFirst | QDir::Name);
 
-        const int maxEntries = 500;
+        const int offset = qMax(0, args.value("offset").toInt(0));
+        const int limit  = qBound(1, args.value("limit").toInt(200), 500);
         QJsonArray entries;
-        for (const QFileInfo& info : infos) {
-            if (entries.size() >= maxEntries)
-                break;
+        for (int i = offset; i < infos.size() && entries.size() < limit; ++i) {
+            const QFileInfo& info = infos[i];
             entries.append(QJsonObject{
                 {"name", info.fileName()},
                 {"type", info.isDir() ? "dir" : "file"},
                 {"size", static_cast<double>(info.size())}});
         }
-        return toolOk({{"entries", entries},
-                       {"truncated", infos.size() > maxEntries}});
+        const int next = offset + entries.size();
+        QJsonObject payload{{"entries", entries},
+                            {"total", infos.size()},
+                            {"truncated", next < infos.size()}};
+        if (next < infos.size())
+            payload["nextOffset"] = next;
+        return toolOk(payload);
     });
 }
 
@@ -383,15 +417,23 @@ void registerReadTextFile(Client* client, QWidget* dialogParent, bool confirm)
     Tool tool;
     tool.setName("read_text_file")
         .setDescription(
-            "Read a text file (UTF-8) and return its content. Content is capped "
-            "at maxBytes (default 65536, maximum 262144); 'truncated' is true "
-            "when the file is larger.")
+            "Read a text file (UTF-8) and return its content, maxBytes at a time "
+            "(default 16384, maximum 262144). When 'truncated' is true, call "
+            "again with 'offset' set to the returned 'nextOffset' to read on. "
+            "Read only as much as the task needs - everything read stays in "
+            "the conversation.")
         .setTitle("Read text file")
         .setGroup("Filesystem")
         .setStatusText("Reading file…")
         .addParameter("path", "string", "Absolute file path.", true)
         .addParameter("maxBytes", "integer",
-                      "Maximum number of bytes to return.", false);
+                      "Maximum number of bytes to return.", false)
+        .addParameter("offset", "integer",
+                      "Byte position to start reading at (default 0).", false)
+        // The tool has its own, explicit size limit; the generic result cap
+        // would cut a read the model deliberately asked for.
+        .setMaxResultChars(0)
+        .setReadOnly(true);
 
     QPointer<QWidget> parent(dialogParent);
     client->registerTool(tool, [parent, confirm](const QJsonObject& args) -> QJsonObject {
@@ -406,15 +448,24 @@ void registerReadTextFile(Client* client, QWidget* dialogParent, bool confirm)
             return toolError(QString("cannot open file: %1").arg(file.errorString()),
                              {{"path", path}});
 
-        qint64 cap = args.value("maxBytes").toInt(65536);
+        qint64 cap = args.value("maxBytes").toInt(16384);
         // All three arguments must share one type: Qt 6 adds mixed-type qBound
         // overloads, which make qBound<qint64>(int, qint64, int) ambiguous.
         cap = qBound(qint64(1), cap, qint64(262144));
+        const qint64 offset = qBound(qint64(0), qint64(args.value("offset").toDouble(0)), file.size());
 
+        file.seek(offset);
+        // ponytail: a chunk boundary can split a multi-byte UTF-8 character
+        // (one replacement character at the seam); align to character
+        // boundaries if exact paging of non-ASCII text matters.
         const QByteArray data = file.read(cap);
-        return toolOk({{"content", QString::fromUtf8(data)},
-                       {"size", static_cast<double>(file.size())},
-                       {"truncated", file.size() > cap}});
+        const qint64 next = offset + data.size();
+        QJsonObject payload{{"content", QString::fromUtf8(data)},
+                            {"size", static_cast<double>(file.size())},
+                            {"truncated", next < file.size()}};
+        if (next < file.size())
+            payload["nextOffset"] = static_cast<double>(next);
+        return toolOk(payload);
     });
 }
 
@@ -687,6 +738,9 @@ void BuiltinTools::registerTool(Client* client, BuiltinTool tool,
     case BuiltinTool::OpenUrl:
         registerOpenUrl(client);
         break;
+    case BuiltinTool::Wait:
+        registerWait(client);
+        break;
     case BuiltinTool::ListDirectory:
         registerListDirectory(client, context.dialogParent,
                               context.confirmFilesystemAccess);
@@ -724,6 +778,7 @@ QString BuiltinTools::toolName(BuiltinTool tool)
     case BuiltinTool::CurrentDateTime: return QStringLiteral("current_datetime");
     case BuiltinTool::SystemInfo:      return QStringLiteral("system_info");
     case BuiltinTool::OpenUrl:         return QStringLiteral("open_url");
+    case BuiltinTool::Wait:            return QStringLiteral("wait");
     case BuiltinTool::ListDirectory:   return QStringLiteral("list_directory");
     case BuiltinTool::ReadTextFile:    return QStringLiteral("read_text_file");
     case BuiltinTool::WriteTextFile:   return QStringLiteral("write_text_file");
@@ -744,6 +799,7 @@ QList<BuiltinTool> BuiltinTools::allTools()
             BuiltinTool::CurrentDateTime,
             BuiltinTool::SystemInfo,
             BuiltinTool::OpenUrl,
+            BuiltinTool::Wait,
             BuiltinTool::ListDirectory,
             BuiltinTool::ReadTextFile,
             BuiltinTool::WriteTextFile,

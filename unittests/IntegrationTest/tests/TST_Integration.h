@@ -55,7 +55,7 @@ private:
         QString endpointUrl = baseUrl + "/v1/messages";
 
         QtLLM::Client client(apiKey, endpointUrl);
-        client.setModel("claude-sonnet-4-5");
+        client.setModel("claude-sonnet-5-5");
         client.setMaxTokens(512);
         client.setSystemPrompt("Reply with exactly one short sentence.");
 
@@ -103,7 +103,7 @@ private:
         QString endpointUrl = baseUrl + "/v1/messages";
 
         QtLLM::Client client(apiKey, endpointUrl);
-        client.setModel("claude-sonnet-4-5");
+        client.setModel("claude-sonnet-5-5");
         client.setMaxTokens(512);
 
         QJsonObject paramSchema;

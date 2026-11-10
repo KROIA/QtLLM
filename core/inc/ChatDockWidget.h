@@ -28,7 +28,16 @@ namespace QtLLM
         ~ChatDockWidget();
 
         void addUserMessage(const QString& message);
+        // Adds the assistant's answer. While an answer is being streamed (see
+        // appendAssistantDelta) this completes that bubble with the final
+        // text instead of adding a second one, so an application that calls
+        // it from responseReady() needs no change to get streaming.
         void addAssistantMessage(const QString& message);
+
+        // Streaming: grows the current answer bubble by a piece of text,
+        // creating the bubble on the first piece. Wired up automatically to
+        // Client::responseDelta() by setClient().
+        void appendAssistantDelta(const QString& text);
 
         // Places a prompt into the conversation exactly as if the user had
         // typed it and pressed Send: the user bubble is rendered and
@@ -96,6 +105,9 @@ namespace QtLLM
         void messageSent(const QString& message);
         void cancelRequested();
         void settingsRequested();
+        // Compact button clicked while no client is bound (with a client,
+        // Client::compactConversation() is called directly).
+        void compactRequested();
         void saveConversationRequested();
         // Result of an interview card added via addInterviewWidget()/execInterview().
         void interviewFinished(const QJsonObject& result);
@@ -109,6 +121,7 @@ namespace QtLLM
         void onCancelTimerTimeout();
         void onSaveClicked();
         void onClearClicked();
+        void onCompactClicked();
 
     protected:
         void resizeEvent(QResizeEvent* event) override;
@@ -121,6 +134,10 @@ namespace QtLLM
         void addToolCallCard(const QString& toolName, const QJsonObject& input);
         void completeToolCallCard(const QString& toolName, const QJsonObject& result);
         void addContextClearedMarker();
+        void addContextMarker(const QString& text);
+        QString assistantHtml(const QString& text) const;
+        void renderStreamingBubble();
+        void finishStreamingBubble();
 
         QWidget* m_centralWidget = nullptr;
         QVBoxLayout* m_messagesLayout = nullptr;
@@ -132,7 +149,8 @@ namespace QtLLM
         QPushButton* m_settingsButton = nullptr;
         ContextUsageBar* m_contextBar = nullptr;
         QPushButton* m_clearButton = nullptr;
-        Client* m_client = nullptr;  // optional conversation source for built-in Save
+        QPushButton* m_compactButton = nullptr;
+        QPointer<Client> m_client;   // optional conversation source for built-in Save; may be destroyed first
         QMetaObject::Connection m_toolStatusConn;  // auto statusText on toolInvoked
         QMetaObject::Connection m_toolDebugInvokedConn;
         QMetaObject::Connection m_toolDebugCompletedConn;
@@ -144,6 +162,11 @@ namespace QtLLM
         QLabel* m_statusLabel = nullptr;
         QLabel* m_tokenLabel = nullptr;
         QTimer m_cancelTimer;
+
+        // The bubble an answer is currently streaming into.
+        QPointer<QLabel> m_streamLabel;
+        QString          m_streamText;
+        QTimer           m_streamRenderTimer;   // coalesces deltas into ~20 repaints a second
         QTimer m_tooltipTimer;
         bool m_autoScroll = true;
         bool m_programmaticScroll = false;

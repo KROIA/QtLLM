@@ -16,6 +16,8 @@
 #include <QToolButton>
 #include <QFile>
 #include <QDateTime>
+#include <QPainter>
+#include <QPainterPath>
 #include "Client.h"
 
 // Resources compiled into a STATIC library are not auto-registered — the
@@ -47,6 +49,39 @@ namespace QtLLM
             QTextEdit::keyPressEvent(event);
         }
     };
+
+    // "287k" for 287431; small counts as they are.
+    static QString humanTokenCount(int tokens)
+    {
+        return tokens >= 1000 ? QString::number(qRound(tokens / 1000.0)) + "k" : QString::number(tokens);
+    }
+
+    // The "compress" glyph: two arrows pushing towards a bar between them.
+    // Painted rather than loaded, so it takes the theme's text colour and is
+    // sharp at any scale factor.
+    static QIcon compactIcon(const QColor& color)
+    {
+        const int size = 64;
+        QPixmap pixmap(size, size);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(color, 5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+
+        const qreal mid = size / 2.0;
+        painter.drawLine(QPointF(12, mid), QPointF(size - 12, mid));        // the bar
+
+        auto arrow = [&](qreal fromY, qreal tipY) {
+            const qreal head = tipY > fromY ? -9 : 9;                          // barbs point back
+            painter.drawLine(QPointF(mid, fromY), QPointF(mid, tipY));
+            painter.drawLine(QPointF(mid, tipY), QPointF(mid - 9, tipY + head));
+            painter.drawLine(QPointF(mid, tipY), QPointF(mid + 9, tipY + head));
+        };
+        arrow(6, mid - 9);            // from the top, down to the bar
+        arrow(size - 6, mid + 9);     // from the bottom, up to the bar
+        painter.end();
+        return QIcon(pixmap);
+    }
 
     ChatDockWidget::ChatDockWidget(QWidget* parent)
         : QDockWidget(parent)
@@ -116,6 +151,21 @@ namespace QtLLM
         m_contextBar = new ContextUsageBar(m_centralWidget);
         contextRow->addWidget(m_contextBar, 1);
 
+        m_compactButton = new QPushButton(m_centralWidget);
+        m_compactButton->setIcon(compactIcon(palette().color(QPalette::ButtonText)));
+        m_compactButton->setFixedWidth(28);
+        m_compactButton->setObjectName("qtllm_compactButton");
+        m_compactButton->setToolTip(
+            "Compact conversation\n\n"
+            "Replaces the conversation so far with a summary of it, which frees most of "
+            "the context window while the assistant still knows what you were doing.\n\n"
+            "Use this when:\n"
+            "- the context bar is filling up and you want to keep working on the same task\n"
+            "- replies are getting slow or expensive in a long conversation\n\n"
+            "Details of earlier messages are lost; the gist is kept.");
+        contextRow->addWidget(m_compactButton);
+        connect(m_compactButton, &QPushButton::clicked, this, &ChatDockWidget::onCompactClicked);
+
         m_clearButton = new QPushButton(QString::fromUtf8("\xf0\x9f\x97\x91"), m_centralWidget);
         m_clearButton->setFixedWidth(28);
         m_clearButton->setToolTip(
@@ -177,11 +227,25 @@ namespace QtLLM
         m_cancelTimer.setInterval(5000);
 
         connect(m_sendButton, &QPushButton::clicked, this, &ChatDockWidget::onSendClicked);
+        // Stable names: how GUI tests and widget-addressing tools find these.
+        m_inputField->setObjectName("qtllm_chatInput");
+        m_sendButton->setObjectName("qtllm_sendButton");
+        m_cancelButton->setObjectName("qtllm_cancelButton");
+        m_saveButton->setObjectName("qtllm_saveButton");
+        m_clearButton->setObjectName("qtllm_clearButton");
+        m_settingsButton->setObjectName("qtllm_settingsButton");
+        m_contextBar->setObjectName("qtllm_contextBar");
+        m_statusLabel->setObjectName("qtllm_statusLabel");
+        m_loadingLabel->setObjectName("qtllm_loadingLabel");
+
         connect(m_cancelButton, &QPushButton::clicked, this, &ChatDockWidget::onCancelClicked);
         connect(m_saveButton, &QPushButton::clicked, this, &ChatDockWidget::onSaveClicked);
         connect(m_clearButton, &QPushButton::clicked, this, &ChatDockWidget::onClearClicked);
         connect(m_settingsButton, &QPushButton::clicked, this, &ChatDockWidget::settingsRequested);
         connect(&m_cancelTimer, &QTimer::timeout, this, &ChatDockWidget::onCancelTimerTimeout);
+        m_streamRenderTimer.setSingleShot(true);
+        m_streamRenderTimer.setInterval(50);
+        connect(&m_streamRenderTimer, &QTimer::timeout, this, &ChatDockWidget::renderStreamingBubble);
 
         connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
             if (m_programmaticScroll)
@@ -218,9 +282,52 @@ namespace QtLLM
 
     void ChatDockWidget::addAssistantMessage(const QString& message)
     {
+        if (m_streamLabel) {
+            // The streamed bubble becomes the answer: final text, no duplicate.
+            m_streamText = message;
+            finishStreamingBubble();
+            return;
+        }
         QWidget* bubble = createMessageBubble(message, false);
         m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, bubble);
         scrollToBottom();
+    }
+
+    void ChatDockWidget::appendAssistantDelta(const QString& text)
+    {
+        if (text.isEmpty())
+            return;
+        if (!m_streamLabel) {
+            QWidget* bubble = createMessageBubble(QString(), false);
+            m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, bubble);
+            m_streamLabel = bubble->findChild<QLabel*>();
+            m_streamLabel->setObjectName("qtllm_streamingBubble");
+            m_streamText.clear();
+        }
+        m_streamText += text;
+        // Re-rendering markdown for every few characters makes a long answer
+        // quadratic; a short timer batches the deltas.
+        if (!m_streamRenderTimer.isActive())
+            m_streamRenderTimer.start();
+    }
+
+    void ChatDockWidget::renderStreamingBubble()
+    {
+        if (!m_streamLabel)
+            return;
+        m_streamLabel->setText(assistantHtml(m_streamText));
+        scrollToBottom();
+    }
+
+    void ChatDockWidget::finishStreamingBubble()
+    {
+        m_streamRenderTimer.stop();
+        if (!m_streamLabel)
+            return;
+        renderStreamingBubble();
+        m_streamLabel->setObjectName(QString());
+        m_streamLabel = nullptr;
+        m_streamText.clear();
     }
 
     InterviewWidget* ChatDockWidget::addInterviewWidget(const QJsonObject& request)
@@ -267,6 +374,8 @@ namespace QtLLM
     {
         m_isLoading = loading;
         m_loadingLabel->setVisible(loading);
+        // Compacting replaces the history; not while a turn is using it.
+        m_compactButton->setEnabled(!loading);
 
         if (loading) {
             m_cancelTimer.start();
@@ -400,6 +509,32 @@ namespace QtLLM
                     completeToolCallCard(toolName, result);
             });
 
+        connect(m_client, &Client::toolProgress, this,
+                [this](const QString&, const QString& statusText) { setStatusText(statusText); });
+        connect(m_client, &Client::compactionStarted, this, [this]() {
+            m_compactButton->setEnabled(false);
+            setStatusText("Compacting conversation...");
+        });
+        connect(m_client, &Client::compactionFinished, this, [this](int before, int after) {
+            m_compactButton->setEnabled(!m_isLoading);
+            clearStatus();
+            addContextMarker(QString::fromUtf8("Context compacted \xc2\xb7 %1 \xe2\x86\x92 %2 tokens")
+                                 .arg(humanTokenCount(before), humanTokenCount(after)));
+        });
+        connect(m_client, &Client::compactionFailed, this, [this](const QString& message) {
+            m_compactButton->setEnabled(!m_isLoading);
+            setStatusText("Compaction failed: " + message);
+        });
+        connect(m_client, &Client::responseDelta, this, &ChatDockWidget::appendAssistantDelta);
+        // A new request inside the same turn (after a tool call): what follows
+        // is a new paragraph of the same answer.
+        connect(m_client, &Client::requestStarted, this, [this]() {
+            if (m_streamLabel && !m_streamText.isEmpty() && !m_streamText.endsWith("\n\n"))
+                m_streamText += "\n\n";
+        });
+        // A turn that ends without responseReady() (error) leaves the partial
+        // answer as it is.
+        connect(m_client, &Client::errorOccurred, this, [this]() { finishStreamingBubble(); });
         connect(m_client, &Client::contextChanged, this, [this]() {
             if (m_client)
                 setContextBreakdown(m_client->contextBreakdown());
@@ -596,8 +731,13 @@ namespace QtLLM
     {
         m_cancelButton->setVisible(false);
         m_cancelTimer.stop();
+        finishStreamingBubble();   // keep what already arrived; the notice follows it
         setLoading(false);
         addAssistantMessage(m_cancelledText);
+        // Stop the turn itself, not just the spinner: otherwise the request
+        // keeps running and its tool calls and answer still arrive.
+        if (m_client)
+            m_client->cancelRequest();
         emit cancelRequested();
     }
 
@@ -614,7 +754,22 @@ namespace QtLLM
         emit clearContextRequested();
     }
 
+    void ChatDockWidget::onCompactClicked()
+    {
+        if (!m_client) {
+            emit compactRequested();
+            return;
+        }
+        if (!m_client->compactConversation())
+            setStatusText("Nothing to compact right now.");
+    }
+
     void ChatDockWidget::addContextClearedMarker()
+    {
+        addContextMarker(QString::fromUtf16(u"Context cleared"));
+    }
+
+    void ChatDockWidget::addContextMarker(const QString& text)
     {
         QWidget* marker = new QWidget();
         marker->setProperty("qtllm_interview", true);  // opt out of bubble font/width auto-sizing
@@ -624,7 +779,7 @@ namespace QtLLM
         QFrame* line1 = new QFrame(marker);
         line1->setFrameShape(QFrame::HLine);
         line1->setStyleSheet("color: #bbb;");
-        QLabel* label = new QLabel(QString::fromUtf16(u"Context cleared"), marker);
+        QLabel* label = new QLabel(text, marker);
         label->setStyleSheet("color: #999; font-size: 10px; padding: 0 6px;");
         QFrame* line2 = new QFrame(marker);
         line2->setFrameShape(QFrame::HLine);
@@ -781,6 +936,19 @@ namespace QtLLM
         return result;
     }
 
+    QString ChatDockWidget::assistantHtml(const QString& text) const
+    {
+        int scaledPt = static_cast<int>(9 * m_fontSizePercent / 100.0);
+        if (scaledPt < 6) scaledPt = 6;
+        QString nameHtml;
+        if (!m_assistantName.isEmpty()) {
+            nameHtml = QString("<span style='font-weight: bold; font-size: %1pt;'>%2</span><br/>")
+                .arg(qMax(scaledPt - 1, 6))
+                .arg(m_assistantName.toHtmlEscaped());
+        }
+        return nameHtml + decorateColorSwatches(markdownToHtml(text));
+    }
+
     QWidget* ChatDockWidget::createMessageBubble(const QString& text, bool isUser)
     {
         QWidget* container = new QWidget();
@@ -820,11 +988,11 @@ namespace QtLLM
         if (isUser) {
             label->setText(nameHtml + text.toHtmlEscaped().replace("\n", "<br>"));
             label->setStyleSheet(
-                "background-color: #DCF8C6; border-radius: 8px; padding: 8px; margin: 4px;");
+                "background-color: #DCF8C6; color: #1a1a1a; border-radius: 8px; padding: 8px; margin: 4px;");
         } else {
-            label->setText(nameHtml + decorateColorSwatches(markdownToHtml(text)));
+            label->setText(assistantHtml(text));
             label->setStyleSheet(
-                "background-color: #E8E8E8; border-radius: 8px; padding: 8px; margin: 4px;");
+                "background-color: #E8E8E8; color: #1a1a1a; border-radius: 8px; padding: 8px; margin: 4px;");
         }
 
         if (isUser) {

@@ -85,7 +85,9 @@ private:
             return;
 
         QtLLM::Client client(QtLLM::Provider::Ollama, baseUrl(), "");
-        client.setModel(models.first());
+        // Not models.first(): that may be a 70 GB model that takes minutes to load.
+        const QString model = QtLLM::Client::pickFallbackModel(QtLLM::Provider::Ollama, models);
+        client.setModel(model);
 
         QEventLoop loop;
         QString receivedText;
@@ -111,7 +113,7 @@ private:
 
         TEST_ASSERT_M(!gotError, ("Ollama error: " + errorMsg).toStdString().c_str());
         TEST_ASSERT_M(!receivedText.isEmpty(), "Expected non-empty response text");
-        std::cout << "  Model: " << models.first().toStdString() << "\n";
+        std::cout << "  Model: " << model.toStdString() << "\n";
         std::cout << "  Response: " << receivedText.toStdString() << "\n";
     }
 

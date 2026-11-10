@@ -40,6 +40,7 @@ void HttpTransport::post(const QUrl& url,
     }
 
     m_busy = true;
+    m_aborted = false;
 
     qDebug() << "[HttpTransport] POST" << url << "body bytes:" << jsonBody.size();
 
@@ -53,6 +54,47 @@ void HttpTransport::post(const QUrl& url,
     m_timeoutTimer.start(m_timeoutMs);
 }
 
+void HttpTransport::postStream(const QUrl& url,
+                               const QByteArray& jsonBody,
+                               const QList<QPair<QByteArray, QByteArray>>& headers)
+{
+    if (m_busy) {
+        emit errorOccurred("Request already in progress");
+        return;
+    }
+
+    m_busy = true;
+    m_aborted = false;
+    m_streaming = true;
+    m_streamIsError = false;
+    m_streamErrorBody.clear();
+
+    qDebug() << "[HttpTransport] POST (stream)" << url << "body bytes:" << jsonBody.size();
+
+    QNetworkRequest request(url);
+    request.setRawHeader("Content-Type", "application/json");
+    for (const auto& pair : headers) {
+        request.setRawHeader(pair.first, pair.second);
+    }
+
+    m_currentReply = m_nam->post(request, jsonBody);
+    QNetworkReply* reply = m_currentReply;
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
+        if (reply != m_currentReply || !reply->isOpen())
+            return;
+        m_timeoutTimer.start(m_timeoutMs);   // data is flowing: restart the idle timeout
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status != 0 && status != 200)
+            m_streamIsError = true;
+        const QByteArray data = reply->readAll();
+        if (m_streamIsError)
+            m_streamErrorBody += data;
+        else if (!data.isEmpty())
+            emit chunkReceived(data);
+    });
+    m_timeoutTimer.start(m_timeoutMs);
+}
+
 void HttpTransport::get(const QUrl& url,
                         const QList<QPair<QByteArray, QByteArray>>& headers)
 {
@@ -62,6 +104,7 @@ void HttpTransport::get(const QUrl& url,
     }
 
     m_busy = true;
+    m_aborted = false;
 
     qDebug() << "[HttpTransport] GET" << url;
 
@@ -77,6 +120,15 @@ void HttpTransport::get(const QUrl& url,
 bool HttpTransport::isBusy() const
 {
     return m_busy;
+}
+
+void HttpTransport::abort()
+{
+    if (!m_currentReply)
+        return;
+    m_aborted = true;
+    // Runs onReplyFinished() synchronously, which swallows the reply.
+    m_currentReply->abort();
 }
 
 void HttpTransport::onTimeout()
@@ -96,6 +148,31 @@ void HttpTransport::onReplyFinished(QNetworkReply* reply)
 
     // Always read the body first — the API returns parseable JSON even on HTTP errors
     QByteArray data = reply->readAll();
+    m_lastStatusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    if (m_aborted) {
+        m_aborted = false;
+        m_streaming = false;
+        reply->deleteLater();
+        return;
+    }
+
+    if (m_streaming) {
+        m_streaming = false;
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            emit errorOccurred(QString("No data received for %1 ms - request aborted").arg(m_timeoutMs));
+        } else if (m_streamIsError) {
+            emit replyReceived(m_streamErrorBody + data);
+        } else if (reply->error() != QNetworkReply::NoError) {
+            emit errorOccurred(reply->errorString());
+        } else {
+            if (!data.isEmpty())
+                emit chunkReceived(data);
+            emit streamFinished();
+        }
+        reply->deleteLater();
+        return;
+    }
 
     qDebug() << "[HttpTransport] reply finished, error=" << reply->error()
              << reply->errorString() << "bytes=" << data.size()

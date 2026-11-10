@@ -12,16 +12,17 @@ Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllm
 
 ## `QtLLM::Provider`
 
-Selects the LLM backend at construction time.
+Selects the LLM backend. Set at construction, changeable later with `Client::setProvider()`.
 
 ```cpp
-enum class Provider { Claude, Ollama };
+enum class Provider { Claude, Ollama, ClaudeCode };
 ```
 
 | Value | Backend |
 |---|---|
-| `Provider::Claude` | Anthropic Claude Messages API |
+| `Provider::Claude` | Anthropic Messages API with an API key — api.anthropic.com, Microsoft Foundry, or a compatible gateway |
 | `Provider::Ollama` | Ollama local inference server |
+| `Provider::ClaudeCode` | The user's claude.ai subscription, through the installed Claude Code CLI. `url` and `apiKey` are unused. See [Providers.md](Providers.md#claude-subscription-claude-code-login) |
 
 ---
 
@@ -48,9 +49,12 @@ explicit Client(Provider provider,
 
 | Method | Description |
 |---|---|
-| `setModel(QString)` | Model identifier. Provider-specific (e.g. `"claude-sonnet-4-5"` or `"llama3.2"`) |
-| `model()` | The model requests actually go out with. Not necessarily the one you set — a model the provider does not offer is replaced automatically |
-| `setMaxTokens(int)` | Maximum tokens in the response. Maps to `num_predict` for Ollama |
+| `setModel(QString)` | Model identifier. Provider-specific (e.g. `"claude-sonnet-5-5"` or `"llama3.2"`) |
+| `model()` | The model requests actually go out with. Not necessarily the one you set — a model the provider does not offer is replaced by `pickFallbackModel()` |
+| `Client::defaultModel(Provider)` | Model used until the application sets one: `claude-sonnet-5-5` (best value for tool work), `llama3.2`, or `sonnet` for the subscription |
+| `setMaxTokens(int)` | Maximum tokens in the response (default 16000 for Claude, 2048 for Ollama). Maps to `num_predict` for Ollama; ignored by `Provider::ClaudeCode` |
+| `setProvider(Provider, url, apiKey)` / `provider()` | Switch backend at runtime. Starts a new conversation; tools, model and system prompt are kept |
+| `setApiKey(QString)` / `setEndpointUrl(QString)` | Change credentials without touching the conversation |
 | `setSystemPrompt(QString)` | Prepended to every request. Omitted when empty. May be changed mid-conversation — history is kept, takes effect from the next request (invalidates the prompt-cache prefix) |
 
 ### Tool registration
@@ -60,6 +64,7 @@ explicit Client(Provider provider,
 | `registerTool(Tool, ToolHandler)` | Register using the `Tool` builder |
 | `registerTool(name, description, schema, ToolHandler)` | Register with a raw JSON schema object |
 | `unregisterTool(QString)` | Remove a registered tool by name |
+| `shareToolsWith(Client* other, QStringList except = {})` | Register this client's tools on `other` too: same definitions, handlers and enabled state. The handlers are shared, so a tool that reports into the chat still does so when `other` calls it |
 
 `ToolHandler` = `std::function<QJsonObject(const QJsonObject&)>`
 
@@ -96,6 +101,7 @@ Execution order per tool call: **call cap → validation → consent → handler
 |---|---|
 | `sendPrompt(QString)` | Append user message and send the full conversation to the API |
 | `sendToolMessage(QString toolName, QJsonObject input)` | Start a model turn from application code, formatted as a tool event (e.g. "timer finished"). Costs tokens like any request |
+| `cancelRequest()` | Abort the turn in flight: request cancelled, queued prompts dropped, the unanswered prompt removed from the history. Emits `requestFinished()` only. A handler already running is not interrupted |
 | `clearConversation()` | Reset history and session statistics. Tools and settings are kept |
 | `conversationHistory()` | `QJsonArray` of `{role, content}` messages |
 | `exportConversation()` | Rich JSON export: raw messages (incl. `tool_use`/`tool_result` blocks), usage statistics, per-turn timeline |
@@ -188,6 +194,20 @@ Calls are served strictly in order. A `Client` holds one history and permits one
 | `stateChanged(Agent::State state)` | Any state transition |
 | `budgetExceeded(double spentUsd)` | Once, when spend passes `costCapUsd` |
 
+### Subagents: letting the model delegate
+
+```cpp
+QtLLM::registerSubagentTool(&client,
+    [this]() { return agentConfigForCurrentProvider(); },        // asked per call
+    [this](QtLLM::Agent* agent) { /* connect to its signals, add or remove tools */ },
+    4,                                                            // at most 4 at a time
+    true);                                                        // share the client's tools
+```
+
+Registers the tool `run_subagent(task, name?)` on the client. Each call spawns an `Agent` with an empty conversation, gives it the task and returns its answer as the tool result; several calls in one response run side by side. The agent is a child of the client, listed in `AgentRegistry` while it works and deleted when it has answered, when the call times out or when the turn is cancelled.
+
+With `shareTools` (default) the agent gets the tools the client has at that moment, except `run_subagent` itself (agents cannot multiply) and the tools that need the user in front of them (question card, dialogs, repeating tasks). `onSpawn` runs afterwards. A call beyond `maxParallel` is refused with an error the model can react to.
+
 ### Model resolution and fallbacks
 
 An agent typically fires its first task within milliseconds of being spawned, long before it could know what the endpoint offers. Sending straight away is how a configured-but-retired model turns into `"Model not found"` on the very first task.
@@ -196,14 +216,14 @@ So an agent sends nothing until the provider has answered with its model list. U
 
 1. If the provider offers `config.model`, it is kept.
 2. Otherwise `config.fallbackModels` is walked in order and the first one the provider offers wins.
-3. If no candidate matches, the provider's first model is used — an agent running on an unexpected model still beats one that cannot run.
+3. If no candidate matches, `Client::pickFallbackModel()` decides: the default model (`claude-sonnet-5-5`), then the next cheaper current one, and only then the provider's first — an agent running on an unexpected model still beats one that cannot run.
 4. If the list comes back **empty**, the fetch failed rather than the provider being empty. Guessing from no information would be worse than trying what was configured, so the configured model is kept and the queue is released.
 
 Any replacement emits `Client::modelChanged(QString)`, and `model()` returns what is actually in use — `config().model` still holds what you asked for, so comparing the two tells you a fallback happened.
 
 ```cpp
-config.model          = "claude-sonnet-4-6";
-config.fallbackModels = { "claude-sonnet-4-5", "claude-haiku-4-5" };
+config.model          = "claude-sonnet-5-5";
+config.fallbackModels = { "claude-haiku-5-5" };
 
 connect(agent, &QtLLM::Client::modelChanged, this, [agent](const QString& effective) {
     qWarning() << agent->config().model << "unavailable, running on" << effective;
@@ -283,6 +303,20 @@ tool.setName("createCircle")
 | `toApiObject()` | `QJsonObject` | Claude wire format — uses `"input_schema"` key |
 | `toOpenAiApiObject()` | `QJsonObject` | OpenAI/Ollama wire format — wraps parameters under `"function"` → `"parameters"` |
 
+### Richer schemas and input checking
+
+| Method | Description |
+|---|---|
+| `addArrayParameter(name, itemType \| itemSchema, description, required)` | Array with a declared element type |
+| `addObjectParameter(name, Tool fields, description, required)` | Nested object; its properties are the parameters of `fields` |
+| `addRawParameter(name, QJsonObject schema, required)` | Any JSON Schema for one parameter |
+| `setRange(name, min, max)` / `setDefault(name, value)` | `minimum`/`maximum`; a default that is applied when the model omits the parameter |
+| `addExample(QJsonObject input)` | Example call, rendered into the description the model reads |
+| `setStrict(bool)` | Claude strict mode: schema-valid input guaranteed by the API |
+| `Tool::prepareInput(schema, args, &error)` | What `Client::setValidateToolInput(true)` runs: converts `"5"`/`"true"`, normalises enum spelling, applies defaults, validates recursively and rejects unknown parameter names with a `did_you_mean` hint |
+| `Tool::isValidName(name)` | Names must match `[a-zA-Z0-9_-]{1,64}`; a violation is logged at registration |
+| `setReadOnly(bool)` / `setMaxResultChars(int)` / `setTimeoutMs(int)` | Behaviour hints: consent, result cap, asynchronous timeout |
+
 ### UI metadata (never sent to the model)
 
 | Method | Description |
@@ -327,6 +361,7 @@ enum class BuiltinTool {
     ColorPicker,      // QColorDialog
     ClipboardRead, ClipboardWrite,
     CurrentDateTime, SystemInfo, OpenUrl,
+    Wait,             // pause for N seconds (asynchronous; the application stays responsive)
     ListDirectory, ReadTextFile, WriteTextFile,  // consent-gated (see below)
     RepeatingTask,    // registers 3 tools: start/cancel/list_repeating_task(s)
 };
@@ -447,8 +482,10 @@ The **Agents** tab is a read-only view of every live [`Agent`](#qtllmagent) in t
 
 | Method | Description |
 |---|---|
-| `provider()` / `setProvider(Provider)` | `SettingsDialog::Provider { Claude, Ollama }` |
-| `apiKey()` / `setApiKey`, `model()` / `setModel`, `endpointUrl()` / `setEndpointUrl`, `ollamaUrl()` / `setOllamaUrl`, `systemPrompt()` / `setSystemPrompt`, `fontSizePercent()` / `setFontSizePercent` | Field access |
+| `provider()` / `setProvider(Provider)` | `SettingsDialog::Provider { Claude, Ollama, Foundry, ClaudeSubscription }` — values are stable, safe to persist as int |
+| `apiKey()` / `setApiKey`, `model()` / `setModel`, `endpointUrl()` / `setEndpointUrl`, `ollamaUrl()` / `setOllamaUrl`, `foundryApiKey()` / `setFoundryApiKey`, `foundryEndpointUrl()` / `setFoundryEndpointUrl`, `systemPrompt()` / `setSystemPrompt`, `fontSizePercent()` / `setFontSizePercent` | Field access. Each provider keeps its own credentials. `foundryEndpointUrl()` completes a bare resource URL with `/v1/messages` |
+| `applyTo(Client*)` | Push provider, credentials, model and system prompt into a client in one call. Switches the client's provider only when the kind of backend changed |
+| `effort()` / `setEffort`, `contextPolicy()` / `setContextPolicy` | Effort combo on the Settings tab; context limit, automatic compaction and strategy on the Context tab (which also has **Compact now**) |
 | `setAvailableModels(QStringList)` | Populate the model combo (preserves current text) |
 | `setUsageHistory(UsageHistory*)` | Wire the statistics tab to live data |
 | `setClient(Client*)` | Fill the **Tools** tab: every registered tool grouped by `group()`, with title, name, description and an enable checkbox. Toggles are applied in one batch on Apply |
@@ -487,7 +524,7 @@ struct UsageStats {
 
 ### Cost estimation (Claude only)
 
-Cost is resolved through the [`PricingRegistry`](#qtllmpricingregistry) across all token categories (input, output, cache read ≈ 10 % of input, cache write ≈ 125 %). The first `Client` triggers `fetchOnlinePricing()` automatically (disk cache, weekly refresh); until it returns, a hard-coded table (Anthropic list prices, 2026-06) is used. Inject your own prices to override either. It is always an estimate — Anthropic has no billing/pricing API; verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
+Cost is resolved through the [`PricingRegistry`](#qtllmpricingregistry) across all token categories (input, output, cache read ≈ 10 % of input, cache write ≈ 125 %). The first `Client` triggers `fetchOnlinePricing()` automatically (disk cache, weekly refresh); until it returns, a hard-coded table (Anthropic list prices, 2026-11) is used. Cache reads use the model's own rate where it differs from 10 %. Inject your own prices to override either. It is always an estimate — Anthropic has no billing/pricing API; verify against the [Anthropic pricing page](https://www.anthropic.com/pricing).
 
 ---
 
@@ -551,6 +588,8 @@ QtLLM::PricingRegistry::instance().setResolver([](const QString& model) {
 
 Persistent per-turn usage log (JSONL file, one sample per completed turn), shared across sessions and apps. Obtained via `Client::usageHistory()`; feeds the statistics tab of `SettingsDialog`.
 
+All instances in a process share one in-memory store per file: the file is parsed once, and a sample appended through any `Client` or `Agent` reaches every instance's `sampleAppended()`. Samples older than two years are dropped when the file is loaded.
+
 | Member | Description |
 |---|---|
 | `setFilePath(QString)` | Override the default storage location |
@@ -610,6 +649,109 @@ struct ModelInfo {
 
 ---
 
+## Streaming, effort and context
+
+| Method | Description |
+|---|---|
+| `setStreamingEnabled(bool)` | Deliver the answer while it is generated. On by default; an endpoint that cannot stream is detected and used without it |
+| signal `responseDelta(QString)` | A piece of answer text as it arrives. `responseReady()` still fires once with all of it |
+| `setEffort(Effort)` | `Default, Low, Medium, High, XHigh, Max` — how much the model thinks before answering; the main cost lever. A model that rejects the setting is used without it |
+| `setMaxToolResultChars(int)` | Cap for one serialized tool result (default 20000, 0 = unlimited). A larger result reaches the model as `{"truncated":true,"original_chars":N,"content_head":...,"hint":...}`. `Tool::setMaxResultChars()` overrides per tool; signal `toolResultTruncated()` |
+| `setContextPolicy(ContextPolicy)` | `limitTokens` (0 = the model's window), `autoCompact`, `triggerRatio` (0.9), `strategy` (`Summarize` / `DropOldest`) |
+| `compactConversation()` | Shrink the conversation now. `Summarize` sends one request and replaces the whole history with the returned summary; `DropOldest` removes whole turns from the front without a request. Signals `compactionStarted()`, `compactionFinished(before, after)`, `compactionFailed(message)` |
+
+`UsageStats::contextTokens` is the provider's own count of the conversation after a turn (last request's input incl. cache, plus its output); it drives the context bar and the automatic trigger without extra requests.
+
+With the chat widget bound to a client (`ChatDockWidget::setClient`), streaming needs no application code: deltas grow one bubble, and the usual `addAssistantMessage()` on `responseReady()` completes that same bubble.
+
+---
+
+## Asynchronous tools
+
+```cpp
+client.registerAsyncTool(tool, [](const QJsonObject& input, QtLLM::ToolCompletion done) {
+    startLongOperation(input, [done](const QJsonObject& result) { done.finish(result); });
+});
+client.registerBackgroundTool(tool, [](const QJsonObject& input) {   // runs on a worker thread
+    return QtLLM::toolOk({{"result", crunch(input)}});
+});
+```
+
+| | |
+|---|---|
+| `ToolCompletion::finish(result)` | Reports the result; any thread; only the first call counts |
+| `ToolCompletion::progress(text)` | Status line while working (`Client::toolProgress`) |
+| `ToolCompletion::isFinished()` | True once answered or timed out |
+| `Tool::setTimeoutMs(int)` | Default 5 minutes; a tool that has not answered is reported to the model as timed out |
+
+The turn waits for every call of a round and sends the results in the order of the calls. A result that arrives after `cancelRequest()` is ignored.
+
+---
+
+## Image tool results
+
+```cpp
+return QtLLM::toolImage(widget->grab().toImage(), {{"what", "main window"}});
+```
+
+The image travels in the provider's own image format (Claude: image block in the tool result; subscription: MCP image content), scaled to at most 1568 px on the long edge. Ollama currently receives the JSON with an `"images": N` note only. The result cap does not count images.
+
+---
+
+## `QtLLM::AppInterface`
+
+Lets the model inspect, operate and point at the host application's user interface. Everything is off until the application enables it, capability by capability; a disabled capability registers no tools.
+
+```cpp
+auto* ui = new QtLLM::AppInterface(&client, mainWindow, mainWindow);
+using Cap = QtLLM::AppInterface::Capability;
+ui->setCapabilities(Cap::ReadActions | Cap::ReadWidgets | Cap::Screenshots
+                  | Cap::Highlights | Cap::SpeechBubbles | Cap::Tours);
+```
+
+| Capability | Tools |
+|---|---|
+| `ReadActions` | `ui_list_actions` |
+| `TriggerActions` | `ui_trigger_action` |
+| `ReadWidgets` | `ui_get_widget_tree`, `ui_find_widgets`, `ui_get_widget` |
+| `ReadProperties` | `ui_get_properties` |
+| `WriteProperties` | `ui_set_property` (allow-list, see `setWritableProperties`) |
+| `ReadLayouts` | `ui_get_layout` |
+| `ModifyLayouts` | `ui_modify_layout`, `ui_undo_layout_change` |
+| `Screenshots` | `ui_screenshot` (`annotate: true` numbers the interactive widgets and returns number -> id) |
+| `Highlights` | `ui_highlight_widget` |
+| `Shapes` | `ui_draw_shape` (rect, roundedRect, ellipse, line, arrow, spotlight) |
+| `Animations` | adds the `animation` parameter to the two above (blink, fade, pulse, colorLoop, marchingAnts, drawOn) |
+| `SpeechBubbles` | `ui_show_bubble` |
+| `Tours` | `ui_show_tour` (all at once, or one at a time with Back / Next) |
+| `WidgetColors` | `ui_set_widget_colors` (background, text, border of one widget), `ui_restore_widget_colors` (one widget, or all) |
+| `Themes` | `ui_list_themes`, `ui_set_theme` - only among the themes the application registered |
+
+Shared helper tools appear with the capabilities that need them: `ui_remove_overlay`, `ui_clear_overlays`, `ui_close_bubble`, `ui_clear_bubbles`, `ui_list_guidance`.
+
+| Method | Description |
+|---|---|
+| `setCapabilityEnabled(cap, bool)` / `setCapabilities(flags)` | The switches |
+| `addRoot(QWidget*)` | Further top-level windows the model may see |
+| `excludeWidget(QWidget*)` | Subtree hidden from every tool. The chat dock is excluded by default |
+| `setWritableProperties(QStringList)` | Properties `ui_set_property` may write (default: text, value, checked, currentIndex, currentText, enabled, visible, toolTip) |
+| `resetLayoutChanges()` | Undo every layout modification |
+| `clearGuidance()` | Remove all highlights, shapes, bubbles and tours |
+| `setAnimationsEnabled(bool)` | Off: overlays are shown static (reduced motion) |
+| `resetWidgetColors()` | Give every widget recoloured by the model its original colours back |
+| `registerTheme(name, description, apply)` | A theme the model may select; `apply` does whatever switching means in the application |
+| `registerTheme(name, description, QPalette, styleName = {}, styleSheet = {})` | The common case: application palette, optionally a `QStyle` ("Fusion") and an application style sheet |
+| `registerStandardThemes()` | Registers `default` (the look at the time of the call) and `dark` (Fusion with `AppInterface::darkPalette()`) |
+| `setTheme(name)` / `currentTheme()` / `themeNames()`, signal `themeChanged(name)` | The same switch from C++, e.g. for a menu entry that stays in sync |
+
+Widgets are addressed by id: the path of object names (`mainWindow/saveButton`), with `ClassName#index` for unnamed widgets. Name the widgets the assistant should find reliably. Password fields are redacted in every read tool and blacked out in screenshots. Read tools and guidance tools are marked `Tool::isReadOnly()`, so a consent handler can ask only for the calls that change something.
+
+Widget colours are applied through a style rule that selects the one widget, so the widgets inside it keep their look; only values that parse as a colour are accepted. The original style sheet is kept and put back on restore. Themes are a closed list: the model cannot define colours for the whole application, it can only pick a registered name.
+
+The drawing classes are usable directly: `GuideOverlay::forWindow(w)->highlight(widget)`, `BubbleManager::forWindow(w)->showBubble(widget, text)`.
+
+---
+
 ## Error handling
 
 The library never throws. All errors surface through the `errorOccurred(QString)` signal.
@@ -618,6 +760,11 @@ The library never throws. All errors surface through the `errorOccurred(QString)
 |---|---|
 | Network error | Emits `errorOccurred` with Qt error string; `requestFinished` also fires |
 | HTTP 4xx / 5xx | Parses JSON error body and emits `errorOccurred` with the API message |
-| Unknown tool | Emits `errorOccurred` and sends an error result to the LLM so it can recover |
+| HTTP 429 / 5xx / `overloaded_error` | Retried twice with backoff (2 s, 8 s) before `errorOccurred` |
+| Unknown tool | The LLM gets an error result naming the available tools and recovers; no `errorOccurred`, the turn continues |
+| Response cut off (`max_tokens`) | `responseReady` with a `[Response truncated ...]` note; a half-written tool call is dropped from the history |
+| Model declines (`refusal`) | Emits `errorOccurred`; the prompt is removed from the history |
+| Tool loop exceeds 25 rounds | `responseReady` with a `[Stopped: tool-use iteration limit ...]` note |
+| Model list unavailable | `modelsAvailable({})`; logged, no `errorOccurred` |
 | Malformed JSON | Emits `errorOccurred`, does not crash |
 | Tool handler throws | Caught by the protocol layer; the model receives `{"status":"error","message":"Internal error: <what>"}` with `is_error` — the process never crashes |
