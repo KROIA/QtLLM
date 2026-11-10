@@ -25,11 +25,15 @@ installation\bin\LibraryExample.exe
 
 ### Running with Ollama
 
-Edit `examples/LibraryExample/main.cpp` to use the Ollama constructor (already the default):
+`examples/LibraryExample/main.cpp` picks the provider with `USED_DEMO`. The default is `DEMO_ANTHROPIC_FOUNDRY`; set it to `DEMO_OLLAMA` to use this constructor:
 
 ```cpp
-ChatWindow window(QtLLM::Provider::Ollama, "", "http://localhost:11434/api/chat", "llama3.2");
+#define USED_DEMO DEMO_OLLAMA
+...
+ChatWindow window(QtLLM::Provider::Ollama, "", "http://localhost:11434/api/chat", "gpt-oss:20b");
 ```
+
+Change the model name to one you have installed. The provider can also be changed at run time in the Settings dialog.
 
 Build and run. The application will:
 1. Check if Ollama is running
@@ -37,11 +41,22 @@ Build and run. The application will:
 3. Populate the model combo box with locally installed models
 4. Allow switching models and downloading new ones via **Manage Models…**
 
+### Scripting demo
+
+`ChatWindowScripting.cpp` shows what an application does to use [scripting](Scripting.md). It is compiled only when `QTLLM_HAS_SCRIPTING` is 1.
+
+- **Methods:** the window's inventory table is the object `inventory` with `list`, `get` (read-only), `setQuantity`, `setLocation`, `add` and `remove`. `inventory.remove` is switched off and locked against the user. The tool `setWindowTitle` is exposed as `tools.setWindowTitle`, and `llm.ask` / `llm.choose` run on the chat's provider with `Effort::Low`.
+- **Approval:** `Approval::ChangingScripts`; the user can change it in the Scripts window.
+- **Saved scripts:** "Restock low items" and "Inventory report" are shipped as read-only scripts; the user's own go to `scripts/` in the application data folder.
+- **Scripts window:** the toolbar action **Scripts…** opens a `QtLLM::ScriptsWidget` in a window of its own, applying changes at once. The user's choices are kept in `QSettings`.
+- **Demo buttons:** the **Scripts** section of the "Assistant Demos" panel sends ready-made prompts to the chat: a loop over the inventory, a dry run first, a saved script, and a script that asks the model per item.
+
 ### Key source files
 
 | File | Purpose |
 |---|---|
 | `ChatWindow.h/.cpp` | Main widget — chat display, input, stats panel, model bar |
+| `ChatWindowScripting.cpp` | Scripting demo: inventory methods, shipped scripts, Scripts window |
 | `ModelManagerDialog.h/.cpp` | Model browser and downloader dialog |
 | `main.cpp` | Application entry point — selects provider |
 
@@ -75,10 +90,14 @@ installation\bin\FoundryDemo.exe
 
 Pure unit tests — no network calls required. Tests cover:
 
+One `TST_*.h` per area in `unittests/QtLLMTest/tests/`, among them:
+
 - `TST_Tool` — schema serialisation for Claude and OpenAI formats
-- `TST_ClaudeProtocol` — request body construction
+- `TST_ClaudeProtocol`, `TST_OpenAiProtocol` — request body construction and answers
 - `TST_Client` — tool registration, unregistration, history management
 - `TST_Provider` — Ollama client construction, `toOpenAiApiObject` schema structure
+- `TST_Agent`, `TST_AppInterface`, `TST_HarnessFeatures` — agents, the application interface, the chat widget
+- `TST_Scripting`, `TST_ScriptsWidget` — scripting and the Scripts tab (in a build with `QTLLM_SCRIPTING=ON`)
 
 Run via CTest:
 

@@ -85,7 +85,7 @@ A script can call exactly what the application registers, nothing else. The engi
 | `addParameter(name, type, description, required = true, enumValues = {})` | Types: `string`, `integer`, `number`, `boolean`, `array`, `object`. Optional parameters last |
 | `setRange(name, min, max)`, `setDefault(name, value)` | Checked and applied before the handler runs |
 | `setReturns(type, description, example)` | The example gives the return type its shape, and is what a dry run answers |
-| `setReadOnly(true)` | The method only reads: runs in a dry run, needs no approval |
+| `setReadOnly(true)` | The method only reads: it runs for real in a dry run, and a script that calls only read-only methods counts as a reading script. Whether reading scripts need approval is set per kind (see [Approval](#approval)) |
 | `setGroup(name)` | For settings lists and for switching whole groups |
 
 In a script, arguments are positional in the order the parameters were added: `db.readObject("a1")`. A single object is accepted as named arguments: `db.setProperty({id: "a1", name: "status", value: "archived"})`.
@@ -201,7 +201,7 @@ A script that fails half way leaves its changes; `calls` says how many calls of 
 
 ### The language
 
-ECMAScript 2016 as implemented by Qt 5.15: `let` / `const`, arrow functions, `for...of`, template strings, destructuring, `Map` / `Set`. Not available: `async` / `await`, optional chaining (`?.`), `??`, object spread. The script is the body of a function: `return` hands back the result. It runs in strict mode.
+ECMAScript 2016 as implemented by Qt: `let` / `const`, arrow functions, `for...of`, template strings, destructuring, `Map` / `Set`. Not available: `async` / `await`, object spread; optional chaining (`?.`) and `??` only in a build with Qt 6. The script is the body of a function: `return` hands back the result. It runs in strict mode.
 
 ### Dry run
 
@@ -286,7 +286,7 @@ The model cannot delete scripts. `setModelMaySaveScripts(false)` takes `save_scr
 
 ## Switches
 
-| What | By code | By the user |
+| What | By code | Locked against the user |
 |---|---|---|
 | Scripting for the model | `setEnabled(bool)` | `setEnabledUserConfigurable(bool)` |
 | What needs approval | `setApprovalRequired(kind, bool)`, `setApproval(preset)` | `setApprovalUserConfigurable(kind, bool)`, or `(bool)` for every kind |
@@ -317,9 +317,15 @@ The editor (`QtLLM::ScriptEditorDialog`) is a window of its own: name, descripti
 
 Check, Run and Dry run work on the code as it stands in the editor, saved or not.
 
-Debug starts the script and stops before every method call. The current line is marked, the call and its arguments are shown, and after Step the value it returned. Continue runs on to the next breakpoint (set by a click in the line-number margin) or to `pause("label")` in the script. Combined with a dry run it steps through a script that changes things without changing anything.
+Debug starts the script and stops before its first statement. The current line is marked, and the Variables table shows what the script's variables hold there; a value that changed since the stop before is bold.
 
-Stepping is by method call, not by statement: the engine has no debugger interface, and the calls are where a script touches the application.
+| Button | |
+|---|---|
+| Step | Runs the statement and stops before the next one, also inside functions of the script |
+| Next call | Runs on to the next method call and shows it with its arguments; the Calls table gets the value it returned |
+| Continue | Runs on to the next breakpoint (set by a click in the line-number margin) or to `pause("label")` in the script |
+
+The engine has no debugger interface, so for a debug run the script is rewritten: a hidden call in front of every statement that starts a line. Stepping is therefore by line - a second statement on a line is not stopped at - and a variable appears from the line after its declaration on. A script whose statements the rewriting cannot tell apart is stepped call by call instead. Normal runs are not rewritten.
 
 ## Running scripts from code
 

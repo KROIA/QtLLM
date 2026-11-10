@@ -6,9 +6,10 @@
 
 ---
 
-A C++/Qt5 library for integrating LLM APIs into desktop applications.
-Supports **Anthropic Claude** and local **Ollama** models out of the box.
-Tool/function calling, streaming-free async design, and a Qt-idiomatic signals-and-slots API.
+A C++/Qt library for integrating LLM APIs into desktop applications.
+Supports **Anthropic Claude** (API key, Microsoft Foundry, or a claude.ai subscription through Claude Code),
+local **Ollama** models and any **OpenAI-compatible** server out of the box.
+Tool/function calling, streamed answers (on by default), and a Qt-idiomatic signals-and-slots API.
 
 ---
 
@@ -20,11 +21,12 @@ Tool/function calling, streaming-free async design, and a Qt-idiomatic signals-a
 - Built-in tools, individually opt-in (`BuiltinTools`): user interview forms in the chat, file dialogs, message boxes, color picker, clipboard, date/time, filesystem access (consent-gated), repeating tasks, and more
 - Tool safety rails: input validation, per-turn call cap, consent hook, enable/disable without re-registration
 - Ready-made widgets: chat dock (Markdown bubbles, inline interview cards, color swatches), settings dialog with tool manager and usage charts
-- Supports Claude (cloud) and Ollama (local) — switchable at construction time
+- Providers `Claude`, `ClaudeCode`, `Ollama` and `OpenAI`, switchable at run time with `Client::setProvider()`
 - Usage statistics, persistent usage history, and cost estimation per turn
 - Ollama: auto-start server, model discovery, and one-click model downloads
 - Builds as shared and static library
-- Qt5 only — no extra dependencies beyond OpenSSL 1.1.x
+- Scripting: the model writes one script instead of many tool calls (optional, `QTLLM_SCRIPTING`)
+- Builds with Qt 5.15 (default) and Qt 6 (verified with Qt 6.11). Needs OpenSSL; with the default `QTLLM_SCRIPTING=ON` also the [ScriptHost](https://github.com/KROIA/ScriptHost) library and the Qt module Qml (see [Building.md](documentation/Building.md#options))
 
 ---
 
@@ -32,7 +34,7 @@ Tool/function calling, streaming-free async design, and a Qt-idiomatic signals-a
 
 | | Version |
 |---|---|
-| Qt | 5.15.x |
+| Qt | 5.15.x (default) or 6.x |
 | OpenSSL | 1.1.1x (Windows runtime DLLs) |
 | CMake | 3.20+ |
 | MSVC | 2019 / 2022 (Windows x64) |
@@ -73,7 +75,8 @@ Detailed documentation is in the [`documentation/`](documentation/) folder:
 | Building & installation | [documentation/Building.md](documentation/Building.md) |
 | API reference | [documentation/API.md](documentation/API.md) |
 | Tool use / function calling | [documentation/ToolUse.md](documentation/ToolUse.md) |
-| Providers (Claude & Ollama) | [documentation/Providers.md](documentation/Providers.md) |
+| Providers (Claude, Foundry, Claude subscription, Ollama, OpenAI-compatible) | [documentation/Providers.md](documentation/Providers.md) |
+| Scripting | [documentation/Scripting.md](documentation/Scripting.md) |
 | Examples | [documentation/Examples.md](documentation/Examples.md) |
 
 

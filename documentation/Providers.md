@@ -1,6 +1,6 @@
 # Providers
 
-QtLLM supports three backends. The public API is identical for all — only the constructor (or `Client::setProvider()`) and the model name differ.
+QtLLM supports the backends below. The public API is identical for all — only the constructor (or `Client::setProvider()`) and the model name differ.
 
 | Backend | `Provider` | Credentials | Billing |
 |---|---|---|---|
@@ -8,8 +8,9 @@ QtLLM supports three backends. The public API is identical for all — only the 
 | Microsoft Foundry | `Claude` + Foundry endpoint | Foundry API key | per token (Azure) |
 | Ollama | `Ollama` | none | free, local |
 | Claude subscription | `ClaudeCode` | Claude Code login | flat rate (Pro / Max / Team plan) |
+| OpenAI-compatible server | `OpenAI` | API key, optional | depends on the server |
 
-In `SettingsDialog` these are four entries of the **Provider** combo, each with its own fields; `SettingsDialog::applyTo(&client)` applies the choice.
+In `SettingsDialog` these are five entries of the **Provider** combo, each with its own fields; `SettingsDialog::applyTo(&client)` applies the choice.
 
 ---
 
@@ -46,7 +47,7 @@ See [docs.anthropic.com/models](https://docs.anthropic.com/en/docs/about-claude/
 
 ### Cost tracking
 
-`UsageStats::sessionCostUsd` is estimated from token counts and a hard-coded price table. See [API.md](API.md#cost-estimation-claude-only) for the table and caveats.
+`UsageStats::sessionCostUsd` is estimated from token counts and the prices of the [`PricingRegistry`](API.md#qtllmpricingregistry) (online LiteLLM table, own prices, or a built-in fallback). See [API.md](API.md#cost-estimation-claude-only) for the table and caveats.
 
 ---
 
@@ -62,7 +63,7 @@ QtLLM::Client client(
 client.setModel("claude-sonnet-5-5");   // the deployment name
 ```
 
-The model name is the **deployment** name. Where the endpoint offers a model list, an unknown model is replaced by the first offered one (`modelChanged()` reports it). Token counting (`count_tokens`) is often not available there; the context display then stays on estimates.
+The model name is the **deployment** name. Where the endpoint offers a model list, an unknown model is replaced as on the Anthropic API (`Client::pickFallbackModel()`): by the default model, then the next cheaper current one, and only then by the first one listed. `modelChanged()` reports it. Token counting (`count_tokens`) is often not available there; the context display then stays on estimates.
 
 ---
 

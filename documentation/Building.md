@@ -4,7 +4,7 @@
 
 | Dependency | Version | Where to get it |
 |---|---|---|
-| Qt | 5.15.x | [qt.io/download](https://www.qt.io/download) — select MSVC 2019 64-bit |
+| Qt | 5.15.x (default) or 6.x | [qt.io/download](https://www.qt.io/download) — select MSVC 2019 64-bit for Qt 5, MSVC 2022 64-bit for Qt 6. Qt 6 is chosen with `-DQT_MAJOR_VERSION=6` at configure; verified with 6.11 |
 | OpenSSL | 1.1.1x | [slproweb.com](https://slproweb.com/products/Win32OpenSSL.html) — *Win64 OpenSSL v1.1.1w Light* |
 | CMake | 3.20+ | Bundled with Visual Studio 2022 |
 | MSVC | 2019 / 2022 | Visual Studio with "Desktop development with C++" workload |

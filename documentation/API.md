@@ -6,7 +6,7 @@ All public types live in the `QtLLM` namespace. Include the umbrella header:
 #include <QtLLM.h>
 ```
 
-Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [AgentsWidget](#qtllmagentswidget) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Error handling](#error-handling)
+Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllmagent) · [AgentRegistry](#qtllmagentregistry) · [AgentsWidget](#qtllmagentswidget) · [Tool](#qtllmtool) · [ToolResult helpers](#tool-result-helpers) · [BuiltinTools](#qtllmbuiltintools) · [InterviewTool](#qtllminterviewtool) · [InterviewWidget](#qtllminterviewwidget) · [ChatDockWidget](#qtllmchatdockwidget) · [SettingsDialog](#qtllmsettingsdialog) · [ToolSettingsWidget](#qtllmtoolsettingswidget) · [UsageStats](#qtllmusagestats) · [PricingRegistry](#qtllmpricingregistry) · [UsageHistory](#qtllmusagehistory) · [OllamaManager](#qtllmollamamanager) · [Streaming, effort and context](#streaming-effort-and-context) · [Asynchronous tools](#asynchronous-tools) · [Image tool results](#image-tool-results) · [AppInterface](#qtllmappinterface) · [GuideOverlay and speech bubbles](#guideoverlay-and-speech-bubbles) · [Switching features on and off](#switching-features-on-and-off) · [AppKnowledge](#qtllmappknowledge) · [Scripting](#qtllmscripting) · [Error handling](#error-handling)
 
 ---
 
@@ -52,8 +52,10 @@ explicit Client(Provider provider,
 |---|---|
 | `setModel(QString)` | Model identifier. Provider-specific (e.g. `"claude-sonnet-5-5"` or `"llama3.2"`) |
 | `model()` | The model requests actually go out with. Not necessarily the one you set — a model the provider does not offer is replaced by `pickFallbackModel()` |
-| `Client::defaultModel(Provider)` | Model used until the application sets one: `claude-sonnet-5-5` (best value for tool work), `llama3.2`, or `sonnet` for the subscription |
-| `setMaxTokens(int)` | Maximum tokens in the response (default 16000 for Claude, 2048 for Ollama). Maps to `num_predict` for Ollama; ignored by `Provider::ClaudeCode` |
+| `Client::defaultModel(Provider)` | Model used until the application sets one: `claude-sonnet-5-5` (best value for tool work), `llama3.2` for Ollama, `sonnet` for the subscription, `gpt-4o-mini` for `Provider::OpenAI` (only a placeholder: a local server offers what is loaded there, and the client switches to that once the model list is in) |
+| `setMaxTokens(int)` | Maximum tokens in the response (default 16000 for Claude, 2048 for Ollama, 4096 for OpenAI-compatible servers). Maps to `num_predict` for Ollama; ignored by `Provider::ClaudeCode` |
+| `isModelAllowed(QString model)` | Whether the model passes the filter set with `setModelFilter()` (see [What the user may change in the settings dialog](#what-the-user-may-change-in-the-settings-dialog)) |
+| `static modelMatches(QString model, QStringList patterns)` | True when the model matches one of the patterns (`*` and `?` wildcards, case-insensitive) |
 | `setProvider(Provider, url, apiKey)` / `provider()` | Switch backend at runtime. Starts a new conversation; tools, model and system prompt are kept |
 | `setApiKey(QString)` / `setEndpointUrl(QString)` | Change credentials without touching the conversation |
 | `setSystemPrompt(QString)` | Prepended to every request. Omitted when empty. May be changed mid-conversation — history is kept, takes effect from the next request (invalidates the prompt-cache prefix) |
@@ -66,8 +68,18 @@ explicit Client(Provider provider,
 | `registerTool(name, description, schema, ToolHandler)` | Register with a raw JSON schema object |
 | `unregisterTool(QString)` | Remove a registered tool by name |
 | `shareToolsWith(Client* other, QStringList except = {})` | Register this client's tools on `other` too: same definitions, handlers and enabled state. The handlers are shared, so a tool that reports into the chat still does so when `other` calls it |
+| `callTool(name, arguments, ToolResultCallback done, ToolCallOptions options = {})` | Run a registered tool from application code as the model would: input repaired and checked against the tool's definition (always, whether or not `setValidateToolInput()` is on), consent, timeout for asynchronous tools. `done(result)` is called at once for an ordinary tool, later for an asynchronous one. An unknown or disabled tool, or input that does not fit, gives an error result without the handler having run; for input that does not fit, the result also carries the tool's `parameters` schema |
 
-`ToolHandler` = `std::function<QJsonObject(const QJsonObject&)>`
+`ToolHandler` = `std::function<QJsonObject(const QJsonObject&)>`, `ToolResultCallback` = `std::function<void(const QJsonObject& result)>`
+
+`ToolCallOptions` says how `callTool()` runs the tool. The defaults are what a call by the model gets; a caller that makes many calls on its own account (a script) switches off what is meant for single calls in a conversation:
+
+| Field | Default | Effect |
+|---|---|---|
+| `announce` | `true` | Emit `toolInvoked()` / `toolCompleted()` |
+| `countInTurn` | `true` | Count against `setMaxToolCallsPerTurn()` |
+| `capResult` | `true` | Apply `setMaxToolResultChars()` |
+| `askConsent` | `true` | Ask the consent handler |
 
 Handlers are called synchronously on the Qt event loop thread — this is guaranteed, so a handler may open a modal dialog or spin a local event loop. The return value is sent back to the LLM as the tool result; `{"status":"error", ...}` results are marked `is_error`. A handler that throws is caught by the protocol layer and converted to an error result (see [ToolUse.md](ToolUse.md)).
 
@@ -120,6 +132,14 @@ Execution order per tool call: **call cap → validation → consent → handler
 | `usageHistory()` | Pointer to the persistent per-turn [`UsageHistory`](#qtllmusagehistory) (JSONL-backed) |
 | `setUsageAppTag(QString)` / `usageAppTag()` | Producer name recorded in `UsageSample::app`. Defaults to the application name; [`Agent`](#qtllmagent) sets `"agent:<name>"` so background spend is separable in the usage charts |
 | `fetchAvailableModels()` | Async model list from the current provider; results via `modelsAvailable()` |
+| `contextBreakdown()` | [`ContextBreakdown`](#qtllmcontextbreakdown) of the next request: system prompt, tools, messages, the context window and the provider's exact count once it has arrived. Reads cached state only, cheap to call from a UI slot connected to `contextChanged()` |
+| `setContextWindowResolver(ContextWindowResolver)` | Your own source for the model's context window size; wins over the provider's answer and the built-in table. Return `<= 0` to fall through. `nullptr` resets. GUI thread only |
+| `contextInfoProvider()` | The `ContextInfoProvider` that asks the provider for the context window and an exact token count (Claude and Ollama). `nullptr` for `ClaudeCode` and `OpenAI`, which have no such endpoint; the breakdown then stays on estimates |
+
+```cpp
+using ContextWindowResolver = std::function<int(const QString& provider, const QString& model)>;
+// provider: "claude", "ollama", "openai" or "claude-code"
+```
 
 ### Signals
 
@@ -135,6 +155,8 @@ Execution order per tool call: **call cap → validation → consent → handler
 | `modelsAvailable(QStringList models)` | Result of `fetchAvailableModels()` |
 | `modelChanged(QString model)` | The active model changed — including the automatic correction when the provider does not offer the configured one. Connect this to keep your own model UI honest |
 | `toolCallLimitReached(int limit)` | Once per turn when the tool-call cap is exceeded |
+| `toolsChanged()` | A tool was added or removed, or one of its switches changed |
+| `contextChanged()` | Something that feeds `contextBreakdown()` changed: system prompt, tool set or conversation. Hook for a live context display |
 
 ---
 
@@ -168,13 +190,16 @@ delete agent;   // kills it; pending callbacks are dropped, not invoked
 |---|---|---|
 | `name` | *(generated)* | Shown in the Agents tab. An empty name gets `"agent-N"` so the registry never holds an unidentifiable entry |
 | `provider` | `Provider::Ollama` | Backend for this agent |
-| `url` | *(provider default)* | Endpoint; empty means `http://localhost:11434/api/chat` or `https://api.anthropic.com/v1/messages` |
+| `url` | *(provider default)* | Endpoint; empty means `http://localhost:11434/api/chat` for Ollama, `http://localhost:1234/v1` for `Provider::OpenAI`, otherwise `https://api.anthropic.com/v1/messages` |
 | `apiKey` | *(empty)* | Ignored for Ollama |
 | `model` | *(empty)* | Preferred model identifier |
 | `fallbackModels` | *(empty)* | Tried in order when the provider does not offer `model` |
 | `systemPrompt` | *(empty)* | Omitted when empty |
 | `maxTokens` | `1024` | Response cap |
 | `costCapUsd` | `0.0` | Spend cap; `0` = unlimited |
+| `effort` | `Effort::Default` | How much the model thinks (see [Streaming, effort and context](#streaming-effort-and-context)). Background work is usually simple; `Effort::Low` makes it cheaper and faster |
+| `messaging` | `false` | The agent can be found and written to by other agents, and gets the tools to do the same (see [Agents talking to each other](#agents-talking-to-each-other)) |
+| `description` | *(empty)* | One line that tells the other agents what this agent is for; shown by `list_agents` |
 
 ### Lifetime
 
@@ -288,7 +313,7 @@ Process-wide list of live agents. Agents add themselves on construction and remo
 | `clearFinished()` | Forget the history |
 | `agentFinished(AgentRecord)` | Signal: an agent was destroyed; its final record (emitted before `agentDestroyed`) |
 
-`Agent::record()` returns the same `AgentRecord` for a living agent. It holds name, provider, model, system prompt, spawn / finish time, totals (turns, tool calls, tokens, cost, working time) and up to 50 tasks, each with prompt, reply or error, duration, tokens, cost and its tool calls (name, input, result, duration; input and result cut at 4000 characters).
+`Agent::record()` returns the same `AgentRecord` for a living agent. It holds name, provider, model, system prompt, spawn / finish time, totals (turns, tool calls, tokens, cost, working time) and up to 50 tasks (`AgentTask`), each with prompt, reply or error, duration, tokens, cost and its tool calls (`AgentToolCall`: name, input, result, duration; input and result cut at 4000 characters).
 
 ---
 
@@ -349,6 +374,9 @@ tool.setName("createCircle")
 | `setStrict(bool)` | Claude strict mode: schema-valid input guaranteed by the API |
 | `Tool::prepareInput(schema, args, &error)` | What `Client::setValidateToolInput(true)` runs: converts `"5"`/`"true"`, normalises enum spelling, applies defaults, validates recursively and rejects unknown parameter names with a `did_you_mean` hint |
 | `Tool::isValidName(name)` | Names must match `[a-zA-Z0-9_-]{1,64}`; a violation is logged at registration |
+| `parameterSchema()` | The full parameter schema with ranges and defaults, also in strict mode. The schema to hand to `prepareInput()` / `validateAgainstSchema()` |
+| `Tool::normalizeEnumCase(schema, args)` | Returns `args` with every enum value rewritten to the spelling in the schema (`"OpenFile"` -> `"openFile"`). Values that match no entry are left alone |
+| `Tool::closestName(name, QStringList candidates)` | The candidate closest to `name`, or empty when none is near enough to be a typo. What `did_you_mean` hints are made of |
 | `setReadOnly(bool)` / `setMaxResultChars(int)` / `setTimeoutMs(int)` | Behaviour hints: consent, result cap, asynchronous timeout |
 
 ### UI metadata (never sent to the model)
@@ -380,6 +408,15 @@ QJsonObject QtLLM::toolOk(const QJsonObject& payload = {});
 QJsonObject QtLLM::toolError(const QString& message, const QJsonObject& extra = {});
 // -> extra + {"status":"error","message":message}
 ```
+
+Pictures in a result (see [Image tool results](#image-tool-results)):
+
+| Function | Description |
+|---|---|
+| `toolImage(QImage, payload = {}, int maxEdge = 1568)` | `{"status":"ok", ...payload}` plus the image, scaled to `maxEdge` on its longer side, PNG or JPEG when that is much smaller |
+| `toolAddImage(QJsonObject& result, QImage, int maxEdge = 1568)` | Adds a further image to such a result |
+| `toolTakeImages(QJsonObject& result)` | Removes the images and returns them; leaves an `"images": N` note in the JSON |
+| `kToolImagesKey` | The reserved key the images are stored under (`"$images"`): `[{"media_type":"image/png","data":"<base64>","width":W,"height":H}, ...]` |
 
 ---
 
@@ -469,7 +506,7 @@ Request format (same as the `ask_user_question` tool input):
 
 ## `QtLLM::ChatDockWidget`
 
-Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, input field, Send/Cancel, status line, token counter, Save and Settings buttons. Assistant messages render tables, inline code, and hex color codes (`#rrggbb`) get a colored rectangle appended.
+Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, input field, Send/Cancel, status line, context usage bar with Clear and Compact, Save and Settings buttons. Assistant messages render tables, inline code, and hex color codes (`#rrggbb`) get a colored rectangle appended.
 
 ### Messages
 
@@ -491,6 +528,9 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 | `updateTokenUsage(int in, int out)` | Update the token counter |
 | `setFontSizePercent(int)` | Scale chat font (50–200 %) |
 | `setClient(Client*)` | Bind a client: Save button exports the conversation itself, and a tool's `statusText` metadata is shown automatically while the tool runs |
+| `appendAssistantDelta(QString)` | Streaming: grow the current answer bubble by a piece of text, creating it on the first piece. `setClient()` connects it to `Client::responseDelta()` |
+| `setShowToolCalls(bool)` / `showToolCalls()` | Debug aid: every tool call appears as a collapsed card (tool name, description, parameters, result). Needs `setClient()`. Off by default |
+| `setContextBreakdown(ContextBreakdown)` | Update the context usage bar. `setClient()` does this on `Client::contextChanged()` |
 
 ### Texts
 
@@ -505,6 +545,8 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 | `settingsRequested()` | User clicked the settings button |
 | `saveConversationRequested()` | Save clicked and **no** client bound (fallback for custom handling) |
 | `interviewFinished(QJsonObject result)` | An interview card was submitted or skipped |
+| `compactRequested()` | Compact clicked and **no** client bound (with a client, `Client::compactConversation()` is called directly) |
+| `clearContextRequested()` | Clear clicked and **no** client bound (with a client, `Client::clearConversation()` is called directly) |
 
 Optional features, off by default: `setImageInputEnabled(bool)` (paste, drop or attach pictures; `attachImages()` from code; signal `imagesSubmitted()` when no client is bound), `setRegenerateEnabled(bool)` (regenerate / edit the last message; an edit is given up by clicking the button again or pressing Esc in the input field, and replaces the exchange only when the changed message is sent), `setLoadButtonVisible(bool)` and `loadConversation(QJsonObject)` (continue a saved conversation).
 
@@ -512,17 +554,21 @@ Optional features, off by default: `setImageInputEnabled(bool)` (paste, drop or 
 
 ## `QtLLM::SettingsDialog`
 
-Ready-made settings dialog (`QDialog`) with five tabs: **Settings** (provider, API key, endpoint, model incl. auto-detection, system prompt, font size), **Tools**, **Statistik** (usage charts), **Context**, and **Agents**.
+Ready-made settings dialog (`QDialog`) with six tabs: **Settings** (provider, API key, endpoint, model incl. auto-detection, system prompt, font size), **Tools**, **Scripts** (only while a `Scripting` object is set with `setScripting()` and scripting is built in), **Statistik** (usage charts), **Context**, and **Agents**.
 
 The **Agents** tab is a read-only view of every live [`Agent`](#qtllmagent) in the process — name, provider/model, state, queue depth, turns, tokens, cost, and uptime, with a detail pane for the selected agent's system prompt, enabled tools, and last prompt/reply/error. It binds to `AgentRegistry` itself, so it needs no wiring. It has no kill or pause controls on purpose: the application owns its agents, and a dialog deleting an object the app still holds is a crash waiting to happen.
 
 | Method | Description |
 |---|---|
-| `provider()` / `setProvider(Provider)` | `SettingsDialog::Provider { Claude, Ollama, Foundry, ClaudeSubscription }` — values are stable, safe to persist as int |
+| `provider()` / `setProvider(Provider)` | `SettingsDialog::Provider { Claude, Ollama, Foundry, ClaudeSubscription, OpenAICompatible }` — values are stable, safe to persist as int |
 | `apiKey()` / `setApiKey`, `model()` / `setModel`, `endpointUrl()` / `setEndpointUrl`, `ollamaUrl()` / `setOllamaUrl`, `foundryApiKey()` / `setFoundryApiKey`, `foundryEndpointUrl()` / `setFoundryEndpointUrl`, `systemPrompt()` / `setSystemPrompt`, `fontSizePercent()` / `setFontSizePercent` | Field access. Each provider keeps its own credentials. `foundryEndpointUrl()` completes a bare resource URL with `/v1/messages` |
-| `setTabVisible(Tab, bool)` | Hide a tab (`Settings, Tools, Statistics, Context, Agents`) |
+| `setTabVisible(Tab, bool)` / `isTabVisible(Tab)` | Hide a tab (`Settings, Tools, Statistics, Context, Agents, Scripts`; `Statistics` is the **Statistik** tab) |
 | `setAvailableProviders(QList<Provider>)` | Which providers the user can choose from |
-| `toolSettingsWidget()` | The Tools tab's list (`ToolSettingsWidget`) |
+| `toolSettingsWidget()` | The Tools tab's list ([`ToolSettingsWidget`](#qtllmtoolsettingswidget)) |
+| `setScripting(ScriptHost::ScriptEngine*)` / `scriptsWidget()` | Bind the application's `Scripting`: adds the **Scripts** tab. `scriptsWidget()` returns that tab's `ScriptsWidget`. Without scripting built in both do nothing |
+| `isModelAllowed(Provider, QString model)` | Whether the model passes that provider's `ProviderPolicy` (`allowedModels` / `blockedModels`) |
+| `showToolCalls()` / `setShowToolCalls(bool)` | The "Tool-Calls im Chat anzeigen" check box on the Settings tab (debug option: tool calls as cards in the chat, see `ChatDockWidget::setShowToolCalls`) |
+| `setFontSizeLabel(QString)` | Text of the font size row's label (default `"Font Size:"`) |
 | `openAiUrl()` / `openAiApiKey()` and setters | Fields of the OpenAI-compatible provider |
 | `applyTo(Client*)` | Push provider, credentials, model and system prompt into a client in one call. Switches the client's provider only when the kind of backend changed |
 | `effort()` / `setEffort`, `contextPolicy()` / `setContextPolicy` | Effort combo on the Settings tab; context limit, automatic compaction and strategy on the Context tab (which also has **Compact now**) |
@@ -537,6 +583,21 @@ The **Agents** tab is a read-only view of every live [`Agent`](#qtllmagent) in t
 
 ---
 
+## `QtLLM::ToolSettingsWidget`
+
+The tools of a client, grouped, with a check box each. The Settings dialog's **Tools** tab is one; an application with its own settings window embeds another (example under [Who decides about a tool](#who-decides-about-a-tool)). Tools the application locked with `Client::setToolUserConfigurable(name, false)` are shown greyed out, or left out with `setLockedToolsVisible(false)`.
+
+| Member | Description |
+|---|---|
+| `setClient(Client*)` / `client()` | The client whose tools are listed |
+| `setLockedToolsVisible(bool)` | Locked tools greyed out (default) or not listed |
+| `setApplyImmediately(bool)` | `true`: a click changes the client at once. `false` (default): `apply()` writes the choices, for a dialog with OK / Apply / Cancel |
+| `apply()` | Writes the user's choices to the client (`Client::setToolEnabledByUser`) |
+| `refresh()` | Rebuilds the list from the client; choices not yet applied are kept. Called automatically when the client's tools change |
+| signal `changed(QString toolName, bool enabled)` | The user switched a tool (not yet applied unless `applyImmediately()`) |
+
+---
+
 ## `QtLLM::UsageStats`
 
 Plain struct populated after each completed turn. Returned by `Client::usageStats()` and carried by the `statsUpdated` signal.
@@ -546,12 +607,17 @@ struct UsageStats {
     // Per-turn (reset each beginTurn call)
     int    inputTokens;   // prompt tokens consumed
     int    outputTokens;  // completion tokens generated
+    int    cacheCreationInputTokens;  // tokens written to the prompt cache this turn
+    int    cacheReadInputTokens;      // tokens read from the prompt cache this turn
     int    toolCalls;     // tool invocations within this turn
     qint64 durationMs;    // wall-clock ms from first HTTP send to final response
+    int    contextTokens; // conversation size after the turn as the provider counted it; 0 = not reported
 
     // Session cumulative totals
     int    sessionInputTokens;
     int    sessionOutputTokens;
+    int    sessionCacheCreationInputTokens;
+    int    sessionCacheReadInputTokens;
     int    sessionToolCalls;
     int    sessionTurnCount;
     double sessionCostUsd;   // estimated USD; always 0 for Ollama (local)
@@ -561,6 +627,25 @@ struct UsageStats {
     int sessionTotalTokens() const;
 };
 ```
+
+### `QtLLM::ContextBreakdown`
+
+What the next request's context is made of. Returned by `Client::contextBreakdown()`, shown by the chat's context bar.
+
+```cpp
+struct ContextBreakdown {
+    int systemPromptTokens;    // chars/4 estimate
+    int toolsTokens;           // enabled tool schemas, chars/4 estimate
+    int messagesTokens;        // conversation, chars/4 estimate
+    int contextWindowTokens;   // the model's window (at most ContextPolicy::limitTokens); 200000 until known
+    int exactUsedTokens;       // provider's own count of the whole request; -1 until it arrives
+
+    int usedTokens()     const;   // sum of the three estimates
+    int bestUsedTokens() const;   // exactUsedTokens when known, else usedTokens()
+};
+```
+
+The three parts always stay estimates: no tokenizer API breaks its count down by section, only the total is exact.
 
 ### Cost estimation (Claude only)
 
@@ -634,6 +719,10 @@ All instances in a process share one in-memory store per file: the file is parse
 |---|---|
 | `setFilePath(QString)` | Override the default storage location |
 | `append(UsageSample)` | Add a sample (done automatically by `Client`) |
+| `samples()` | All recorded samples |
+| `samplesInRange(qint64 fromMs, qint64 toMs)` | Samples with a timestamp in `[fromMs, toMs]`, both inclusive |
+| `earliestTimestamp()` | Epoch ms of the earliest sample, or 0 |
+| `sessionStartMs()` | Epoch ms at which this instance was constructed |
 | `distinctModels()` / `distinctApps()` | Filter values seen in the history |
 | `reload()` / `clear()` | Re-read / wipe the backing file |
 | signal `sampleAppended(UsageSample)` | Live update hook for charts |
@@ -696,6 +785,7 @@ struct ModelInfo {
 | `setStreamingEnabled(bool)` | Deliver the answer while it is generated. On by default; an endpoint that cannot stream is detected and used without it |
 | signal `responseDelta(QString)` | A piece of answer text as it arrives. `responseReady()` still fires once with all of it |
 | `setEffort(Effort)` | `Default, Low, Medium, High, XHigh, Max` — how much the model thinks before answering; the main cost lever. A model that rejects the setting is used without it |
+| `QtLLM::effortName(Effort)` | The wire name (`"low"` ... `"max"`); empty for `Default` |
 | `setMaxToolResultChars(int)` | Cap for one serialized tool result (default 20000, 0 = unlimited). A larger result reaches the model as `{"truncated":true,"original_chars":N,"content_head":...,"hint":...}`. `Tool::setMaxResultChars()` overrides per tool; signal `toolResultTruncated()` |
 | `setContextPolicy(ContextPolicy)` | `limitTokens` (0 = the model's window), `autoCompact`, `triggerRatio` (0.9), `strategy` (`Summarize` / `DropOldest`) |
 | `compactConversation()` | Shrink the conversation now. `Summarize` sends one request and replaces the whole history with the returned summary; `DropOldest` removes whole turns from the front without a request. Signals `compactionStarted()`, `compactionFinished(before, after)`, `compactionFailed(message)` |
@@ -791,12 +881,139 @@ Shared helper tools appear with the capabilities that need them: `ui_remove_over
 | `registerTheme(name, description, QPalette, styleName = {}, styleSheet = {})` | The common case: application palette, optionally a `QStyle` ("Fusion") and an application style sheet |
 | `registerStandardThemes()` | Registers `default` (the look at the time of the call) and `dark` (Fusion with `AppInterface::darkPalette()`) |
 | `setTheme(name)` / `currentTheme()` / `themeNames()`, signal `themeChanged(name)` | The same switch from C++, e.g. for a menu entry that stays in sync |
+| `widgetForId(QString id)` | The widget an id names; `nullptr` for unknown, stale, excluded or out-of-root ids |
+| `idForWidget(QWidget*)` | The id the tools use for a widget; empty for widgets outside the roots or excluded |
+| `isExcluded(QWidget*)` | True when the widget or one of its parents was excluded, or is a `ChatDockWidget` |
+| `roots()` | The windows the tools see: the root window, `addRoot()` windows, and with window discovery every visible top-level window |
+| `client()` | The client the tools are registered on |
 
 Widgets are addressed by id: the path of object names (`mainWindow/saveButton`), with `ClassName#index` for unnamed widgets. Name the widgets the assistant should find reliably. Password fields are redacted in every read tool and blacked out in screenshots. Read tools and guidance tools are marked `Tool::isReadOnly()`, so a consent handler can ask only for the calls that change something.
 
 Widget colours are applied through a style rule that selects the one widget, so the widgets inside it keep their look; only values that parse as a colour are accepted. The original style sheet is kept and put back on restore. Themes are a closed list: the model cannot define colours for the whole application, it can only pick a registered name.
 
-The drawing classes are usable directly: `GuideOverlay::forWindow(w)->highlight(widget)`, `BubbleManager::forWindow(w)->showBubble(widget, text)`.
+The public methods named after the tools (`listActions()` ... `listGuidance()`) are what the registered handlers call: each takes the tool's arguments and returns its result.
+
+The drawing classes are usable directly: `GuideOverlay::forWindow(w)->highlight(widget)`, `BubbleManager::forWindow(w)->showBubble(widget, text)`. See [GuideOverlay and speech bubbles](#guideoverlay-and-speech-bubbles).
+
+---
+
+## GuideOverlay and speech bubbles
+
+The drawing classes behind the guidance tools (`GuideOverlay.h`, `SpeechBubble.h`, both in `QtLLM.h`). An application can use them without `AppInterface`. Owner thread only.
+
+```cpp
+auto* overlay = QtLLM::GuideOverlay::forWindow(mainWindow);
+QtLLM::OverlayItem arrow;
+arrow.shape  = QtLLM::OverlayItem::Shape::Arrow;
+arrow.anchor = saveButton;
+arrow.from   = QPointF(40, 40);
+arrow.animation.type = QtLLM::OverlayAnimation::Type::Blink;
+arrow.durationMs = 8000;
+const QString id = overlay->addItem(arrow);     // empty when refused
+```
+
+### `QtLLM::GuideOverlay`
+
+Transparent, mouse-transparent layer over a whole top-level window. One per window, created on first use.
+
+| Member | Description |
+|---|---|
+| `static forWindow(QWidget*)` | The overlay of the window containing the widget |
+| `addItem(OverlayItem)` | Returns the item's id, or an empty string when refused: item limit (`kMaxItems`, 20) reached, anchor in another window, no geometry. An item with the same id is replaced. The blink period and `durationMs` are clamped to the limits (`kMinBlinkPeriodMs` 334, `kMaxDurationMs` 5 minutes) |
+| `highlight(QWidget* target, QColor color = orange, OverlayAnimation = {}, int durationMs = 0)` | Shorthand: an outline around the widget. Returns the id |
+| `removeItem(id)` / `clear()` | Remove one item / all of them |
+| `itemIds()` / `item(id)` / `itemRect(id)` | The ids; the stored item after clamping; its painted geometry in window coordinates (empty when not painted) |
+| `static setAnimationsEnabled(bool)` / `animationsEnabled()` | For every overlay. Off: each item is shown in its static end state (reduced motion) |
+| `static overlayItemFromJson(QJsonObject, OverlayItem*, QString* error = nullptr)` | Applies the keys present in the JSON to `*item`; absent keys leave it unchanged, so the caller pre-fills defaults and sets the anchor. On error `*item` is untouched and `*error` says why. `overlayItemToJson()` is the other direction |
+| signal `itemRemoved(QString id)` | Every removal: explicit, `clear()`, timed expiry, anchor destroyed, replaced |
+
+```cpp
+struct OverlayItem {
+    enum class Shape { Rect, RoundedRect, Ellipse, Line, Arrow, Spotlight };
+    QString id;                  // generated when empty
+    Shape shape = Shape::RoundedRect;
+    QPointer<QWidget> anchor;    // follows the widget; not painted while it is hidden, removed when it is destroyed
+    QRectF rect;                 // without anchor: window coordinates
+    QPointF from, to;            // Line / Arrow; anchored: ends on the anchor's edge nearest "from"
+    QColor stroke = QColor(255, 140, 0);
+    QColor fill;                 // invalid = none; Spotlight: the dimming colour
+    qreal strokeWidth = 2;
+    qreal cornerRadius = 6;
+    Qt::PenStyle penStyle = Qt::SolidLine;
+    int padding = 4;             // space between anchor and outline
+    OverlayAnimation animation;
+    int durationMs = 0;          // 0 = until removed
+};
+
+struct OverlayAnimation {
+    enum class Type { None, Blink, Fade, Pulse, ColorLoop, MarchingAnts, DrawOn };
+    Type type = Type::None;
+    int periodMs = 1000;         // one cycle; for Fade and DrawOn the transition
+    int count = 0;               // cycles; 0 = until the item is removed
+    QList<QColor> colors;        // ColorLoop
+    bool fadeOut = false;        // Fade of a timed item: also fade out at the end
+};
+```
+
+The JSON format of `overlayItemFromJson()`:
+
+```json
+{ "id": "...", "shape": "rect|roundedRect|ellipse|line|arrow|spotlight",
+  "stroke": "#rrggbb", "fill": "...", "strokeWidth": 2, "cornerRadius": 6, "padding": 4,
+  "penStyle": "solid|dash|dot|dashDot",
+  "rect": { "x", "y", "width", "height" }, "from": { "x", "y" }, "to": { "x", "y" },
+  "animation": { "type": "none|blink|fade|pulse|colorLoop|marchingAnts|drawOn",
+                 "periodMs": 1000, "count": 0, "colors": ["#f00", "#00f"], "fadeOut": false },
+  "durationMs": 0 }
+```
+
+`"color"` is accepted for `"stroke"`; colours may also be `#aarrggbb` or a name.
+
+### `QtLLM::BubbleManager`
+
+The speech bubbles and tours of one window, addressed by id. One per window, created on first use.
+
+| Member | Description |
+|---|---|
+| `static forWindow(QWidget*)` | The manager of the window containing the widget |
+| `showBubble(QWidget* target, text, title = {}, int number = 0, Placement = Auto)` | A bubble pointing at the widget; `number > 0` shows a numbered badge. Returns the id, empty when the target is not in this window |
+| `showBubble(QPoint windowPoint, text, ...)` | The same, pointing at a fixed point in window coordinates |
+| `closeBubble(id)` | Close one bubble |
+| `clear()` | Close every bubble and tour, and forget which ones the user closed |
+| `bubbleIds()` / `bubble(id)` | The ids; the `SpeechBubble` for an id |
+| `showTour(QList<TourStep>, TourMode = TourMode::AllAtOnce)` | `AllAtOnce`: bubbles numbered 1..N. `OneAtATime`: one bubble with Back / Next and "2 / 5", the current target highlighted on the `GuideOverlay`. Steps whose target is gone or in another window are skipped; empty id when none is left. The tour ends after the last step or when its bubble is closed |
+| `closeTour(id)` / `tourIds()` | End a tour; the ids |
+| `tourStep(id)` / `setTourStep(id, int index)` | Zero-based current step of a `OneAtATime` tour (-1 for an unknown id); jump to a step |
+| `describe()` | Bubbles and tours as JSON, including bubbles the user closed |
+| signal `bubbleClosed(QString id)` | The user closed a bubble |
+
+```cpp
+struct TourStep { QPointer<QWidget> target; QString text; QString title; };
+enum class TourMode { AllAtOnce, OneAtATime };   // BubbleManager::TourMode
+```
+
+### `QtLLM::SpeechBubble`
+
+The bubble itself: a text box (rich text allowed) with a tail pointing at a widget or a fixed point. It is a child of the target's window and, unlike the overlay, takes mouse input: drag the body to move it (the tail stays on the target), x closes it. It follows the target on resize and move unless the user dragged it, hides while the target is hidden and deletes itself when the target is destroyed. Usually created through `BubbleManager`.
+
+```cpp
+SpeechBubble(QWidget* target, const QString& text, const QString& title = QString(),
+             int number = 0, Placement placement = Placement::Auto);
+SpeechBubble(QWidget* anyWidgetInWindow, const QPoint& point, const QString& text,
+             const QString& title = QString(), int number = 0, Placement placement = Placement::Auto);
+enum class Placement { Auto, Right, Below, Left, Above };
+```
+
+| Member | Description |
+|---|---|
+| `id()` / `setId`, `text()` / `setText`, `title()` / `setTitle`, `number()` / `setNumber`, `placement()` / `setPlacement` | Content and placement |
+| `target()` / `setTarget(QWidget*)` | Point at another widget of the same window; the bubble is placed anew |
+| `setFooter(QWidget*)` | Extra controls under the text (the tour buttons); the bubble takes ownership |
+| `reposition()` | Place the bubble for the current target geometry; a dragged bubble stays where the user put it |
+| `isUserMoved()`, `tailTip()`, `bubbleRect()`, `targetRect()` | State and geometry, in window coordinates |
+| `dismiss()` | Close from code: hides and deletes later, without `closed()` |
+| signal `closed(QString id)` | The user clicked x; the bubble deletes itself afterwards |
+| signal `moved()` | The user finished dragging the bubble |
 
 ---
 
@@ -898,6 +1115,14 @@ help->addTopicsFromDirectory(":/help");    // every *.md / *.txt; first line = t
 
 Registers `app_help_search(query)` and `app_help_read(id, offset)` while there is at least one topic. `setEnabled(false)` withdraws them.
 
+| Method | Description |
+|---|---|
+| `addTopic(id, title, text, keywords = {})` | Adding an id again replaces the topic |
+| `addTopicsFromDirectory(path)` | Every `*.md` / `*.txt` file: file name without extension = id, first line (without a leading `#`) = title. Returns the number added |
+| `removeTopic(id)` / `clear()` | Remove one topic / all of them. Without topics the tools are withdrawn |
+| `topicIds()` | The ids of all topics |
+| `setEnabled(bool)` / `isEnabled()` | Off: the tools are withdrawn, the topics are kept. Default on |
+
 ---
 
 ## `QtLLM::Scripting`
@@ -927,7 +1152,7 @@ scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
 | Running | `run(code, options, callback)`, `stop()`, `isRunning()`; `RunOptions::dryRun` records changing calls instead of making them |
 | Limits | `setLimits({timeoutMs, maxCalls, maxLogLines})`, `ScriptMethod::setMaxCallsPerRun`, `setLlmCallLimit` |
 | Approval | `setApprovalRequired(ScriptKind, bool)` per kind (`NewReading`, `NewChanging`, `SavedReading`, `SavedChanging`, `DryRun`), `setApproval(Never \| ChangingScripts \| Always)` for all, `setApprovalHandler` |
-| Debugger | `RunOptions::debug`, `stepRun()`, `continueRun()`, `setBreakpoints()`, signals `runPaused`, `runCallFinished` |
+| Debugger | `RunOptions::debug` and `statements`, `stepStatement()`, `stepRun()` (to the next call), `continueRun()`, `setBreakpoints()`, signals `runPaused(line, method, arguments, variables)`, `runCallFinished` |
 | Saved scripts | `QtLLM::ScriptLibrary`: `setDirectory`, `addReadOnlyDirectory`, `scripts()`, `save`, `remove` |
 | User interface | `SettingsDialog::setScripting()` adds the Scripts tab (`QtLLM::ScriptsWidget`); `QtLLM::ScriptEditorDialog` is the editor with runner and call stepping |
 | User's choices | `userSettings()` / `applyUserSettings()` |

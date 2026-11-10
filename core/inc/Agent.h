@@ -18,7 +18,7 @@ struct QT_LLM_API AgentConfig
     QString  apiKey;                      // ignored for Ollama
     QString  model;
     // Tried in order when the provider does not offer `model`. If none of the
-    // candidates is offered either, the provider's first model is used — an
+    // candidates is offered either, Client::pickFallbackModel() chooses - an
     // agent that runs on the wrong model still beats one that cannot run.
     QStringList fallbackModels;
     QString  systemPrompt;
