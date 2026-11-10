@@ -309,6 +309,18 @@ QWidget* ChatWindow::buildFeatureDemoPanel()
          "How do I change the colour theme of this application? Look it up in the "
          "application's help and then show me where."},
 
+        {"Scripts", "demoScriptLoop", "Loop with a script",
+         "Write a script that adds 100 to the quantity of every inventory item with less than "
+         "50, run it, and tell me which items you changed."},
+        {"Scripts", "demoScriptDryRun", "Dry run first",
+         "I want every item on Shelf A moved to Shelf C. Do a dry run of a script for that "
+         "first and tell me what it would change. Do not run it for real."},
+        {"Scripts", "demoScriptSaved", "Run a saved script",
+         "Which saved scripts are there? Run the inventory report and summarise it."},
+        {"Scripts", "demoScriptAsk", "Script asks a model",
+         "Use a script that asks the language model, for every inventory item, whether it is a "
+         "fastener, and give me the list of fasteners."},
+
         {"Ask and tidy up", "demoQuestion", "Ask me a question",
          "Ask me which of three accent colours I prefer, using a question card, then confirm my choice."},
         {"Ask and tidy up", "demoClear", "Remove all markers",
@@ -436,6 +448,11 @@ void ChatWindow::buildToolBar()
                             "Provider, model, context management and tools");
     settings->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
     connect(settings, &QAction::triggered, this, &ChatWindow::openSettings);
+
+    QAction* scripts = add("actionScripts", "Scripts…",
+                           "Saved scripts, the script editor and what scripts may do");
+    scripts->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+    connect(scripts, &QAction::triggered, this, &ChatWindow::openScripts);
 
     bar->addSeparator();
     addPanelToggle("actionShowStatistics", "Usage Statistics", m_statsBox);
@@ -892,6 +909,10 @@ void ChatWindow::registerTools()
                 logAgent(QString("[subagent %1] failed: %2").arg(name, message));
             });
         });
+
+    // run_script: the assistant writes a loop once instead of making a tool
+    // call per item. See ChatWindowScripting.cpp.
+    registerScripting();
 }
 
 void ChatWindow::connectSignals()
@@ -1000,6 +1021,11 @@ void ChatWindow::openSettings()
 
     // Tools tab: list registered tools, enable/disable applied on Apply
     dlg.setClient(&m_client);
+    // Scripts tab: the switches the application left to the user, the saved
+    // scripts with their editor, the methods a script can call.
+#if QTLLM_HAS_SCRIPTING
+    dlg.setScripting(m_scripting);
+#endif
 
     // Model fetching is fully self-contained inside SettingsDialog (it
     // queries whichever provider/credentials are currently typed into
@@ -1020,6 +1046,7 @@ void ChatWindow::openSettings()
         // The Tools tab has been applied to the client by now; remember it.
         QSettings().setValue(kToolsKey,
             QJsonDocument(m_client.userToolSettings()).toJson(QJsonDocument::Compact));
+        saveScriptSettings();
 
         // Persist both providers' fields in RAM regardless of which is
         // active, so switching back later restores exactly what was

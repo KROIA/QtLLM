@@ -26,3 +26,7 @@
 #include "tests/TST_HarnessFeatures.h"
 #include "tests/TST_AgentMessaging.h"
 #include "tests/TST_SettingsPolicy.h"
+#if QTLLM_HAS_SCRIPTING
+#include "tests/TST_Scripting.h"
+#include "tests/TST_ScriptsWidget.h"
+#endif

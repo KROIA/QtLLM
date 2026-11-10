@@ -964,9 +964,27 @@ void Client::callDeferredTool(const QJsonObject& input, ToolResultCallback done)
     if (input.value("arguments").isString())
         args = QJsonDocument::fromJson(input.value("arguments").toString().toUtf8()).object();
 
-    // The model has only seen this schema as text, so check against it
+    // Shown and logged as the tool it is, not as "call_tool".
+    callTool(name, args, std::move(done));
+}
+
+void Client::callTool(const QString& toolName, const QJsonObject& arguments,
+                      ToolResultCallback done, const ToolCallOptions& options)
+{
+    const auto it = m_tools.constFind(toolName);
+    if (it == m_tools.cend()) {
+        done(toolError(QStringLiteral("no tool '%1'").arg(toolName)));
+        return;
+    }
+    if (!it.value().enabled) {
+        done(toolError(QStringLiteral("tool is disabled")));
+        return;
+    }
+
+    // The caller may know this schema only as text, so check against it
     // whether or not validation is switched on - and hand it back on a
-    // mistake, which saves another find_tools round.
+    // mistake, which saves a round of looking it up.
+    QJsonObject args = arguments;
     QJsonObject error;
     if (!Tool::prepareInput(it.value().validationSchema, args, &error)) {
         error["parameters"] = it.value().validationSchema;
@@ -974,10 +992,12 @@ void Client::callDeferredTool(const QJsonObject& input, ToolResultCallback done)
         return;
     }
 
-    // Shown and logged as the tool it is, not as "call_tool".
-    emit toolInvoked(name, args);
-    wrapHandler(name, it.value())(args, [this, name, done](const QJsonObject& result) {
-        emit toolCompleted(name, result);
+    const bool announce = options.announce;
+    if (announce)
+        emit toolInvoked(toolName, args);
+    wrapHandler(toolName, it.value(), options)(args, [this, toolName, done, announce](const QJsonObject& result) {
+        if (announce)
+            emit toolCompleted(toolName, result);
         done(result);
     });
 }
@@ -985,15 +1005,20 @@ void Client::callDeferredTool(const QJsonObject& input, ToolResultCallback done)
 // Single choke point in front of every tool execution:
 // call cap -> input validation -> consent -> registered handler.
 // All checks are opt-in; with defaults this forwards to the handler unchanged.
-ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredTool& rt)
+ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredTool& rt,
+                                    const ToolCallOptions& options)
 {
     ToolHandler inner = rt.handler;
     AsyncToolHandler asyncInner = rt.asyncHandler;
     const int timeoutMs = rt.tool.timeoutMs() > 0 ? rt.tool.timeoutMs() : 300000;
     QJsonObject parameterSchema = rt.validationSchema;
-    const int toolLimit = rt.tool.maxResultChars();
 
-    return [this, toolName, inner, asyncInner, timeoutMs, parameterSchema, toolLimit]
+    // Not capping = unlimited for this call, whatever client and tool say.
+    const int toolLimit = options.capResult ? rt.tool.maxResultChars() : 0;
+    const bool countInTurn = options.countInTurn;
+    const bool askConsent = options.askConsent;
+
+    return [this, toolName, inner, asyncInner, timeoutMs, parameterSchema, toolLimit, countInTurn, askConsent]
            (const QJsonObject& input, ToolResultCallback done) {
         // The summary request carries the tool list (so the cached prefix is
         // reused), but a summary must not have side effects on the application.
@@ -1003,7 +1028,7 @@ ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredToo
             return;
         }
 
-        if (m_maxToolCallsPerTurn > 0 && m_toolCallsThisTurn >= m_maxToolCallsPerTurn) {
+        if (countInTurn && m_maxToolCallsPerTurn > 0 && m_toolCallsThisTurn >= m_maxToolCallsPerTurn) {
             if (!m_limitSignalEmitted) {
                 m_limitSignalEmitted = true;
                 emit toolCallLimitReached(m_maxToolCallsPerTurn);
@@ -1026,7 +1051,7 @@ ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredToo
             args = Tool::normalizeEnumCase(parameterSchema, input);
         }
 
-        if (m_consentHandler && !m_consentHandler(toolName, args)) {
+        if (askConsent && m_consentHandler && !m_consentHandler(toolName, args)) {
 #if LOGGER_LIBRARY_AVAILABLE == 1
             m_logger.logInfo("Tool declined by consent handler: " + toolName.toStdString());
 #endif
@@ -1034,7 +1059,8 @@ ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredToo
             return;
         }
 
-        ++m_toolCallsThisTurn;
+        if (countInTurn)
+            ++m_toolCallsThisTurn;
 
         if (!asyncInner) {
             done(capResult(toolName, toolLimit, inner(args)));

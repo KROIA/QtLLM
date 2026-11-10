@@ -8,6 +8,10 @@
 #include "Tool.h"
 #include "ContextUsageBar.h"
 #include "AgentsWidget.h"
+#if SH_LIBRARY_AVAILABLE == 1
+#include "ScriptEngine.h"
+#include "ScriptsWidget.h"
+#endif
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
 #include "ClaudeCodeProtocol.h"
@@ -184,6 +188,15 @@ namespace QtLLM
         m_toolSettings = new ToolSettingsWidget(this);
         m_tabWidget->addTab(m_toolSettings, "Tools");
 
+        // ---- Scripts tab ----
+        // Hidden until setScripting() binds a script engine.
+#if SH_LIBRARY_AVAILABLE == 1
+        m_scriptsPage = new ScriptHost::ScriptsWidget(this);
+#else
+        m_scriptsPage = new QWidget(this);
+#endif
+        m_tabWidget->addTab(m_scriptsPage, "Scripts");
+
         // ---- Statistik tab ----
         m_statsWidget = new UsageStatsWidget(this);
         m_tabWidget->addTab(m_statsWidget, QString::fromUtf16(u"Statistik"));
@@ -260,6 +273,9 @@ namespace QtLLM
         // in the process without the host app wiring anything up.
         m_agentsWidget = new AgentsWidget(this);
         m_tabWidget->addTab(m_agentsWidget, "Agents");
+        // By Tab: the tabs are not in the order of the enum.
+        m_tabPages = {settingsPage, m_toolSettings, m_statsWidget, contextPage, m_agentsWidget, m_scriptsPage};
+        updateScriptsTab();
 
         mainLayout->addWidget(m_tabWidget, 1);
 
@@ -295,6 +311,10 @@ namespace QtLLM
                 this, &SettingsDialog::onApply);
         connect(m_buttonBox, &QDialogButtonBox::rejected,
                 this, &QDialog::reject);
+        // Cancel, Esc or the window's close button: the pending switches go.
+#if SH_LIBRARY_AVAILABLE == 1
+        connect(this, &QDialog::rejected, scriptsWidget(), &ScriptHost::ScriptsWidget::revert);
+#endif
     }
 
     void SettingsDialog::updateFieldVisibility()
@@ -577,6 +597,9 @@ namespace QtLLM
         }
         m_modelHintLabel->setVisible(false);
         applyToolToggles();
+#if SH_LIBRARY_AVAILABLE == 1
+        scriptsWidget()->apply();
+#endif
         emit settingsApplied();
         accept();
     }
@@ -584,6 +607,9 @@ namespace QtLLM
     void SettingsDialog::showEvent(QShowEvent* event)
     {
         refreshToolsTab();
+#if SH_LIBRARY_AVAILABLE == 1
+        scriptsWidget()->refresh();
+#endif
         refreshContextTab();
         emit detectModelsRequested();  // back-compat: apps may still react to this
         fetchModelsForCurrentProvider();
@@ -645,13 +671,50 @@ namespace QtLLM
 
     void SettingsDialog::setTabVisible(Tab tab, bool visible)
     {
-        // Tabs are created in the order of the enum.
-        m_tabWidget->setTabVisible(static_cast<int>(tab), visible);
+        if (tab == Tab::Scripts) {
+            m_scriptsTabWanted = visible;
+            updateScriptsTab();
+            return;
+        }
+        m_tabWidget->setTabVisible(m_tabWidget->indexOf(m_tabPages.value(int(tab))), visible);
     }
 
     bool SettingsDialog::isTabVisible(Tab tab) const
     {
-        return m_tabWidget->isTabVisible(static_cast<int>(tab));
+        return m_tabWidget->isTabVisible(m_tabWidget->indexOf(m_tabPages.value(int(tab))));
+    }
+
+#if SH_LIBRARY_AVAILABLE == 1
+    void SettingsDialog::setScripting(ScriptHost::ScriptEngine* scripting)
+    {
+        if (m_scripting)
+            disconnect(m_scripting, &QObject::destroyed, this, &SettingsDialog::updateScriptsTab);
+        m_scripting = scripting;
+        if (m_scripting)
+            connect(m_scripting, &QObject::destroyed, this, &SettingsDialog::updateScriptsTab);
+        scriptsWidget()->setScripting(scripting);
+        updateScriptsTab();
+    }
+
+    ScriptHost::ScriptsWidget* SettingsDialog::scriptsWidget() const
+    {
+        return static_cast<ScriptHost::ScriptsWidget*>(m_scriptsPage);
+    }
+#else
+    void SettingsDialog::setScripting(ScriptHost::ScriptEngine*)
+    {
+    }
+
+    ScriptHost::ScriptsWidget* SettingsDialog::scriptsWidget() const
+    {
+        return nullptr;
+    }
+#endif
+
+    void SettingsDialog::updateScriptsTab()
+    {
+        m_tabWidget->setTabVisible(m_tabWidget->indexOf(m_scriptsPage),
+                                   m_scriptsTabWanted && m_scripting);
     }
 
     SettingsDialog::Provider SettingsDialog::provider() const

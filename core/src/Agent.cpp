@@ -580,6 +580,11 @@ void registerSubagentTool(Client* client,
                 if (requiresUserInterface(offered))
                     except.append(offered);
             }
+            // Scripts belong to the chat: one runs at a time, in front of the user.
+            for (const Tool& offered : owner->registeredTools()) {
+                if (offered.group() == QLatin1String("Scripting"))
+                    except.append(offered.name());
+            }
             owner->shareToolsWith(agent, except);
         }
         if (onSpawn)

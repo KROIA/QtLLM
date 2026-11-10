@@ -54,6 +54,12 @@ private:
     // feature: highlights, shapes, speech bubbles, tours, looking at the UI.
     QWidget* buildFeatureDemoPanel();
     void registerTools();
+    // Scripting: the inventory as methods a script can call, the policy on
+    // them, saved scripts. In ChatWindowScripting.cpp. They do nothing in a
+    // build without scripting (QTLLM_SCRIPTING=OFF).
+    void registerScripting();
+    void saveScriptSettings();
+    void openScripts();
     void connectSignals();
     void initOllamaIfNeeded();
 
@@ -104,6 +110,11 @@ private:
     QPointer<QtLLM::Agent> m_criticAgent;
     QtLLM::AppInterface* m_appInterface = nullptr;
     QtLLM::AppKnowledge* m_knowledge = nullptr;
+#if QTLLM_HAS_SCRIPTING
+    QtLLM::Scripting*    m_scripting = nullptr;
+    QtLLM::ScriptLibrary* m_scriptLibrary = nullptr;
+#endif
+    QWidget*             m_scriptsWindow = nullptr;
     QTextEdit*    m_agentLog    = nullptr;
     QLabel*       m_agentStatus = nullptr;
     QPushButton*  m_killAgentBtn = nullptr;

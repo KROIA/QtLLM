@@ -31,6 +31,7 @@
 #include "AppInterface.h"
 #include "AppKnowledge.h"
 #include "ToolSettingsWidget.h"
+#include "Scripting.h"
 #include "GuideOverlay.h"
 #include "SpeechBubble.h"
 

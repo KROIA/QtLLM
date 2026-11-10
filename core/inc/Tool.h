@@ -79,6 +79,10 @@ public:
     // True when name matches ^[a-zA-Z0-9_-]{1,64}$, the rule the APIs enforce.
     static bool isValidName(const QString& name);
 
+    // The candidate closest to name, or empty when none is near enough to be
+    // a typo of it. What "did_you_mean" hints are made of.
+    static QString closestName(const QString& name, const QStringList& candidates);
+
     // Behaviour hints, never sent to the model.
     // readOnly: the tool only inspects state. Consent dialogs can let such
     //   calls through and ask only for the ones that change something.
