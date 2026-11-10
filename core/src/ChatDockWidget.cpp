@@ -4,6 +4,9 @@
 #include <QFrame>
 #include <QScrollBar>
 #include <QKeyEvent>
+#include <QJsonArray>
+#include <QMimeData>
+#include <QUrl>
 #include <QEventLoop>
 #include <QPointer>
 #include <QTextDocument>
@@ -35,8 +38,20 @@ namespace QtLLM
     public:
         using QTextEdit::QTextEdit;
         std::function<void()> onSubmit;
+        // Returns true when it took pictures out of pasted / dropped data.
+        std::function<bool(const QMimeData*)> onPictures;
 
     protected:
+        bool canInsertFromMimeData(const QMimeData* source) const override
+        {
+            return source->hasImage() || QTextEdit::canInsertFromMimeData(source);
+        }
+        void insertFromMimeData(const QMimeData* source) override
+        {
+            if (onPictures && onPictures(source))
+                return;
+            QTextEdit::insertFromMimeData(source);
+        }
         void keyPressEvent(QKeyEvent* event) override
         {
             if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
@@ -163,6 +178,24 @@ namespace QtLLM
             "- the context bar is filling up and you want to keep working on the same task\n"
             "- replies are getting slow or expensive in a long conversation\n\n"
             "Details of earlier messages are lost; the gist is kept.");
+        // Regenerate / edit: hidden until setRegenerateEnabled(true).
+        m_regenerateButton = new QPushButton(QString::fromUtf8("\xe2\x86\xbb"), m_centralWidget);
+        m_regenerateButton->setFixedWidth(28);
+        m_regenerateButton->setObjectName("qtllm_regenerateButton");
+        m_regenerateButton->setToolTip("Regenerate\n\nRemoves the last answer and asks the same question again.");
+        m_regenerateButton->setVisible(false);
+        contextRow->addWidget(m_regenerateButton);
+        connect(m_regenerateButton, &QPushButton::clicked, this, &ChatDockWidget::onRegenerateClicked);
+
+        m_editLastButton = new QPushButton(QString::fromUtf8("\xe2\x9c\x8e"), m_centralWidget);
+        m_editLastButton->setFixedWidth(28);
+        m_editLastButton->setObjectName("qtllm_editLastButton");
+        m_editLastButton->setToolTip("Edit last message\n\nTakes your last message and its answer out of the "
+                                     "conversation and puts the message back into the input field.");
+        m_editLastButton->setVisible(false);
+        contextRow->addWidget(m_editLastButton);
+        connect(m_editLastButton, &QPushButton::clicked, this, &ChatDockWidget::onEditLastClicked);
+
         contextRow->addWidget(m_compactButton);
         connect(m_compactButton, &QPushButton::clicked, this, &ChatDockWidget::onCompactClicked);
 
@@ -186,7 +219,16 @@ namespace QtLLM
         inputField->setMaximumHeight(80);
         inputField->setAcceptRichText(false);
         inputField->onSubmit = [this]() { onSendClicked(); };
+        inputField->onPictures = [this](const QMimeData* data) { return takePictures(data); };
         m_inputField = inputField;
+
+        // Pictures waiting to go out with the next message.
+        m_attachRow = new QWidget(m_centralWidget);
+        m_attachRow->setObjectName("qtllm_attachRow");
+        auto* attachLayout = new QHBoxLayout(m_attachRow);
+        attachLayout->setContentsMargins(0, 0, 0, 0);
+        attachLayout->setSpacing(4);
+        m_attachRow->setVisible(false);
 
         QHBoxLayout* buttonLayout = new QHBoxLayout();
         buttonLayout->setSpacing(4);
@@ -206,6 +248,24 @@ namespace QtLLM
         }
         m_saveButton->setFixedWidth(32);
         m_saveButton->setToolTip(QString::fromUtf16(u"Konversation als JSON speichern"));
+
+        m_attachButton = new QPushButton(QString::fromUtf8("\xf0\x9f\x93\x8e"), m_centralWidget);
+        m_attachButton->setFixedWidth(32);
+        m_attachButton->setObjectName("qtllm_attachButton");
+        m_attachButton->setToolTip("Attach pictures (or paste / drop them into the message field)");
+        m_attachButton->setVisible(false);
+        buttonLayout->addWidget(m_attachButton);
+        connect(m_attachButton, &QPushButton::clicked, this, &ChatDockWidget::onAttachClicked);
+
+        m_loadButton = new QPushButton(m_centralWidget);
+        m_loadButton->setIcon(style()->standardIcon(QStyle::SP_DialogOpenButton));
+        m_loadButton->setFixedWidth(32);
+        m_loadButton->setObjectName("qtllm_loadButton");
+        m_loadButton->setToolTip("Continue a saved conversation");
+        m_loadButton->setVisible(false);
+        buttonLayout->addWidget(m_loadButton);
+        connect(m_loadButton, &QPushButton::clicked, this, &ChatDockWidget::onLoadClicked);
+
         buttonLayout->addWidget(m_saveButton);
 
         m_settingsButton = new QPushButton(QString::fromUtf8("\xe2\x9a\x99"), m_centralWidget);
@@ -217,6 +277,7 @@ namespace QtLLM
         m_cancelButton->setStyleSheet("background-color: #e74c3c; color: white; padding: 4px 12px; border-radius: 4px;");
         m_cancelButton->setVisible(false);
 
+        mainLayout->addWidget(m_attachRow);
         mainLayout->addWidget(m_inputField);
         mainLayout->addLayout(buttonLayout);
         mainLayout->addWidget(m_cancelButton);
@@ -277,6 +338,7 @@ namespace QtLLM
     {
         QWidget* bubble = createMessageBubble(message, true);
         m_messagesLayout->insertWidget(m_messagesLayout->count() - 1, bubble);
+        m_userBubbles.append(bubble);
         scrollToBottom();
     }
 
@@ -376,6 +438,9 @@ namespace QtLLM
         m_loadingLabel->setVisible(loading);
         // Compacting replaces the history; not while a turn is using it.
         m_compactButton->setEnabled(!loading);
+        m_regenerateButton->setEnabled(!loading);
+        m_editLastButton->setEnabled(!loading);
+        m_loadButton->setEnabled(!loading);
 
         if (loading) {
             m_cancelTimer.start();
@@ -448,6 +513,7 @@ namespace QtLLM
             delete item;
         }
         m_pendingToolCards.clear();
+        m_userBubbles.clear();
     }
 
     void ChatDockWidget::setAssistantName(const QString& name)
@@ -700,8 +766,8 @@ namespace QtLLM
 
     bool ChatDockWidget::submitPrompt(const QString& text)
     {
-        const QString trimmed = text.trimmed();
-        if (trimmed.isEmpty())
+        QString trimmed = text.trimmed();
+        if (trimmed.isEmpty() && m_pendingImages.isEmpty())
             return false;
 
         if (m_isLoading) {
@@ -711,10 +777,208 @@ namespace QtLLM
             return false;
         }
 
-        addUserMessage(trimmed);
+        QString shown = trimmed;
+        if (!m_pendingImages.isEmpty()) {
+            // Applications send what messageSent() carries and tend to skip
+            // an empty text, so pictures alone still need words.
+            if (trimmed.isEmpty())
+                trimmed = shown = QStringLiteral("See the attached picture.");
+            shown += QStringLiteral("\n[%1 picture(s) attached]").arg(m_pendingImages.size());
+            if (m_client)
+                m_client->attachImages(m_pendingImages);
+            else
+                emit imagesSubmitted(m_pendingImages);
+            m_pendingImages.clear();
+            updateAttachRow();
+        }
+
+        addUserMessage(shown);
         emit messageSent(trimmed);
         m_inputField->clear();
         return true;
+    }
+
+    // ------------------------------------------------------------ pictures
+
+    void ChatDockWidget::setImageInputEnabled(bool enabled)
+    {
+        m_imageInput = enabled;
+        m_attachButton->setVisible(enabled);
+        if (!enabled) {
+            m_pendingImages.clear();
+            updateAttachRow();
+        }
+    }
+
+    void ChatDockWidget::attachImages(const QList<QImage>& images)
+    {
+        if (m_client && !m_client->supportsImageInput()) {
+            setStatusText("The current provider cannot take pictures.");
+            return;
+        }
+        for (const QImage& image : images) {
+            // ponytail: at most 8 per message; more is rarely what anyone wants
+            // and every picture costs tokens.
+            if (!image.isNull() && m_pendingImages.size() < 8)
+                m_pendingImages.append(image);
+        }
+        updateAttachRow();
+    }
+
+    bool ChatDockWidget::takePictures(const QMimeData* data)
+    {
+        if (!m_imageInput)
+            return false;
+        QList<QImage> images;
+        if (data->hasImage()) {
+            images.append(qvariant_cast<QImage>(data->imageData()));
+        } else {
+            for (const QUrl& url : data->urls()) {
+                const QImage image(url.toLocalFile());   // null for anything that is not a picture
+                if (!image.isNull())
+                    images.append(image);
+            }
+        }
+        if (images.isEmpty())
+            return false;
+        attachImages(images);
+        return true;
+    }
+
+    void ChatDockWidget::onAttachClicked()
+    {
+        const QStringList paths = QFileDialog::getOpenFileNames(
+            this, "Attach pictures", QString(), "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp)");
+        QList<QImage> images;
+        for (const QString& path : paths)
+            images.append(QImage(path));
+        attachImages(images);
+    }
+
+    void ChatDockWidget::updateAttachRow()
+    {
+        QLayout* layout = m_attachRow->layout();
+        while (QLayoutItem* item = layout->takeAt(0)) {
+            delete item->widget();
+            delete item;
+        }
+        for (const QImage& image : m_pendingImages) {
+            auto* thumb = new QLabel(m_attachRow);
+            thumb->setPixmap(QPixmap::fromImage(image.scaledToHeight(40, Qt::SmoothTransformation)));
+            thumb->setToolTip(QString("%1 x %2").arg(image.width()).arg(image.height()));
+            layout->addWidget(thumb);
+        }
+        auto* remove = new QToolButton(m_attachRow);
+        remove->setText(QString::fromUtf8("\xc3\x97"));
+        remove->setObjectName("qtllm_attachClear");
+        remove->setToolTip("Remove the attached pictures");
+        connect(remove, &QToolButton::clicked, this, [this]() {
+            m_pendingImages.clear();
+            // Not under the button that is being clicked.
+            QTimer::singleShot(0, this, [this]() { updateAttachRow(); });
+        });
+        layout->addWidget(remove);
+        static_cast<QHBoxLayout*>(layout)->addStretch();
+        m_attachRow->setVisible(!m_pendingImages.isEmpty());
+    }
+
+    // ------------------------------------------------------------ regenerate, edit, load
+
+    void ChatDockWidget::setRegenerateEnabled(bool enabled)
+    {
+        m_regenerate = enabled;
+        m_regenerateButton->setVisible(enabled);
+        m_editLastButton->setVisible(enabled);
+    }
+
+    bool ChatDockWidget::removeLastExchangeBubbles()
+    {
+        while (!m_userBubbles.isEmpty() && !m_userBubbles.last())
+            m_userBubbles.removeLast();
+        if (m_userBubbles.isEmpty())
+            return false;
+        const int from = m_messagesLayout->indexOf(m_userBubbles.takeLast());
+        if (from < 0)
+            return false;
+        while (m_messagesLayout->count() - 1 > from) {   // the last item is the stretch
+            QLayoutItem* item = m_messagesLayout->takeAt(from);
+            delete item->widget();
+            delete item;
+        }
+        m_pendingToolCards.clear();
+        return true;
+    }
+
+    QString ChatDockWidget::takeLastExchange()
+    {
+        if (!m_client || m_isLoading)
+            return QString();
+        // ponytail: assumes the last exchange in the conversation is the last
+        // one typed here. A message the application injected without a bubble
+        // (Client::sendToolMessage) in between breaks that pairing.
+        const QString prompt = m_client->removeLastExchange();
+        if (prompt.isEmpty()) {
+            setStatusText("There is no message to take back.");
+            return QString();
+        }
+        removeLastExchangeBubbles();
+        return prompt;
+    }
+
+    void ChatDockWidget::onRegenerateClicked()
+    {
+        const QString prompt = takeLastExchange();
+        if (!prompt.isEmpty())
+            submitPrompt(prompt);
+    }
+
+    void ChatDockWidget::onEditLastClicked()
+    {
+        const QString prompt = takeLastExchange();
+        if (prompt.isEmpty())
+            return;
+        setInputText(prompt);
+        m_inputField->setFocus();
+    }
+
+    void ChatDockWidget::setLoadButtonVisible(bool visible)
+    {
+        m_loadButton->setVisible(visible);
+    }
+
+    bool ChatDockWidget::loadConversation(const QJsonObject& exported)
+    {
+        if (!m_client || !m_client->importConversation(exported))
+            return false;
+        clearMessages();
+        for (const QJsonValue& value : m_client->conversationHistory()) {
+            const QJsonObject message = value.toObject();
+            if (message["role"].toString() == QLatin1String("user"))
+                addUserMessage(message["content"].toString());
+            else
+                addAssistantMessage(message["content"].toString());
+        }
+        addContextMarker("Conversation loaded");
+        return true;
+    }
+
+    void ChatDockWidget::onLoadClicked()
+    {
+        if (!m_client)
+            return;
+        const QString path = QFileDialog::getOpenFileName(
+            this, "Continue a saved conversation", QString(), "JSON (*.json)");
+        if (path.isEmpty())
+            return;
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            setStatusText("Could not open " + path);
+            return;
+        }
+        const QJsonObject exported = QJsonDocument::fromJson(file.readAll()).object();
+        if (!loadConversation(exported))
+            setStatusText(QString("This conversation cannot be continued here - it was saved with "
+                                  "the provider \"%1\".").arg(exported["provider"].toString()));
     }
 
     void ChatDockWidget::setInputText(const QString& text)

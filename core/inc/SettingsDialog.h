@@ -26,6 +26,7 @@ namespace QtLLM
     class ContextUsageBar;
     class ProtocolBase;
     class AgentsWidget;
+    class ToolSettingsWidget;
 
     class QT_LLM_API SettingsDialog : public QDialog
     {
@@ -36,8 +37,13 @@ namespace QtLLM
             Claude,             // Anthropic API key (api.anthropic.com or a compatible gateway)
             Ollama,             // local models
             Foundry,            // Claude deployed in Microsoft Foundry, own key + endpoint
-            ClaudeSubscription  // personal claude.ai plan via the installed Claude Code CLI
+            ClaudeSubscription, // personal claude.ai plan via the installed Claude Code CLI
+            OpenAICompatible    // LM Studio, llama.cpp, vLLM, ... (OpenAI Chat Completions API)
         };
+
+        // Which providers the user can choose from. All by default; an
+        // application that, say, must stay local offers only those.
+        void setAvailableProviders(const QList<Provider>& providers);
 
         explicit SettingsDialog(QWidget* parent = nullptr);
         ~SettingsDialog();
@@ -51,6 +57,8 @@ namespace QtLLM
         // Messages endpoint of the Foundry resource. A bare resource/base URL
         // typed by the user is completed with "/v1/messages".
         QString foundryEndpointUrl() const;
+        QString openAiUrl() const;
+        QString openAiApiKey() const;
         QString systemPrompt() const;
         Effort effort() const;
         // Context tab: limit, automatic compaction, strategy.
@@ -66,6 +74,8 @@ namespace QtLLM
         void setOllamaUrl(const QString& url);
         void setFoundryApiKey(const QString& key);
         void setFoundryEndpointUrl(const QString& url);
+        void setOpenAiUrl(const QString& url);
+        void setOpenAiApiKey(const QString& key);
         void setSystemPrompt(const QString& prompt);
         void setEffort(Effort effort);
         void setContextPolicy(const ContextPolicy& policy);
@@ -81,6 +91,16 @@ namespace QtLLM
         // (grouped, with description) and lets the user enable/disable them.
         // Toggles are applied in one batch when Apply is clicked.
         void setClient(Client* client);
+
+        // The Tools tab's list, e.g. to hide the tools the application locked
+        // (ToolSettingsWidget::setLockedToolsVisible). Which tools the user may
+        // switch at all is decided on the Client: setToolUserConfigurable().
+        ToolSettingsWidget* toolSettingsWidget() const { return m_toolSettings; }
+
+        // Hide a tab the application does not want to offer. All visible by default.
+        enum class Tab { Settings, Tools, Statistics, Context, Agents };
+        void setTabVisible(Tab tab, bool visible);
+        bool isTabVisible(Tab tab) const;
 
         // Push the chosen provider, its credentials, the model and the system
         // prompt into a Client. Switches the Client's provider (which starts a
@@ -129,6 +149,10 @@ namespace QtLLM
         QLineEdit*   m_ollamaUrlEdit = nullptr;
         QLineEdit*   m_foundryKeyEdit = nullptr;
         QLineEdit*   m_foundryUrlEdit = nullptr;
+        QLineEdit*   m_openAiUrlEdit = nullptr;
+        QLineEdit*   m_openAiKeyEdit = nullptr;
+        QLabel*      m_openAiUrlLabel = nullptr;
+        QLabel*      m_openAiKeyLabel = nullptr;
         QTextEdit* m_systemPromptEdit = nullptr;
         QSpinBox* m_fontSizeSpinBox = nullptr;
         QCheckBox* m_showToolCallsCheck = nullptr;
@@ -156,8 +180,6 @@ namespace QtLLM
 
         QPointer<Client>          m_client;
         QPointer<ProtocolBase>    m_modelFetchProtocol;  // throwaway, see fetchModelsForCurrentProvider()
-        QWidget*                  m_toolsPage = nullptr;
-        QVBoxLayout*              m_toolsLayout = nullptr;
-        QMap<QString, QCheckBox*> m_toolChecks;   // tool name -> checkbox
+        ToolSettingsWidget*       m_toolSettings = nullptr;
     };
 }

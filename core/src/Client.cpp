@@ -2,6 +2,7 @@
 #include "ClaudeProtocol.h"
 #include "OllamaProtocol.h"
 #include "ClaudeCodeProtocol.h"
+#include "OpenAiProtocol.h"
 #include "ClaudeContextInfoProvider.h"
 #include "OllamaContextInfoProvider.h"
 #include "ToolResult.h"
@@ -12,7 +13,9 @@
 #include <QDateTime>
 #include <QCoreApplication>
 #include <QTimer>
+#include <QRegularExpression>
 #include <QThreadPool>
+#include <algorithm>
 #include <atomic>
 
 namespace QtLLM {
@@ -49,7 +52,32 @@ QJsonArray summaryAsHistory(const QString& summary)
 bool startsTurn(const QJsonValue& message)
 {
     const QJsonObject obj = message.toObject();
-    return obj["role"].toString() == QLatin1String("user") && obj["content"].isString();
+    if (obj["role"].toString() != QLatin1String("user"))
+        return false;
+    if (obj["content"].isString())
+        return true;
+    // A prompt with pictures is an array as well.
+    for (const QJsonValue& block : obj["content"].toArray()) {
+        if (block.toObject()["type"].toString() == QLatin1String("tool_result"))
+            return false;
+    }
+    return true;
+}
+
+const char* const kFindTools = "find_tools";
+const char* const kCallTool  = "call_tool";
+
+// Tool setting first, then its group's, then the default.
+bool policyValue(const QHash<QString, bool>& byTool, const QHash<QString, bool>& byGroup,
+                 const Tool& tool, bool fallback)
+{
+    const auto toolIt = byTool.constFind(tool.name());
+    if (toolIt != byTool.constEnd())
+        return toolIt.value();
+    const auto groupIt = byGroup.constFind(tool.group());
+    if (groupIt != byGroup.constEnd())
+        return groupIt.value();
+    return fallback;
 }
 
 // The {role, text} view Client::conversationHistory() offers, from a
@@ -149,6 +177,9 @@ QString Client::defaultModel(Provider provider)
     switch (provider) {
     case Provider::Ollama:     return QStringLiteral("llama3.2");
     case Provider::ClaudeCode: return QStringLiteral("sonnet");
+    // Only a placeholder: a local server offers what is loaded there, and
+    // validateCurrentModel() switches to that as soon as the list is in.
+    case Provider::OpenAI:     return QStringLiteral("gpt-4o-mini");
     case Provider::Claude:     break;
     }
     return QStringLiteral("claude-sonnet-5-5");
@@ -189,6 +220,12 @@ void Client::createProtocol(Provider provider, const QString& url, const QString
         // The CLI exposes no tokenizer; contextBreakdown() stays on estimates.
         m_contextInfoProvider = nullptr;
         m_currentProvider = "claude-code";
+        break;
+    case Provider::OpenAI:
+        m_protocol = new OpenAiProtocol(url, apiKey, this);
+        // No tokenizer endpoint in this API; contextBreakdown() stays on estimates.
+        m_contextInfoProvider = nullptr;
+        m_currentProvider = "openai";
         break;
     case Provider::Claude:
         m_protocol = new ClaudeProtocol(apiKey, QUrl(url), this);
@@ -337,6 +374,8 @@ void Client::setApiKey(const QString& apiKey)
         claude->setApiKey(apiKey);
         if (auto* claudeInfo = qobject_cast<ClaudeContextInfoProvider*>(m_contextInfoProvider))
             claudeInfo->setApiKey(apiKey);
+    } else if (auto* openAi = qobject_cast<OpenAiProtocol*>(m_protocol)) {
+        openAi->setApiKey(apiKey);
     }
     // Ollama needs no API key - no-op there.
 }
@@ -352,7 +391,14 @@ void Client::setEndpointUrl(const QString& url)
         ollama->setUrl(u);
         if (auto* ollamaInfo = qobject_cast<OllamaContextInfoProvider*>(m_contextInfoProvider))
             ollamaInfo->setBaseUrl(u);
+    } else if (auto* openAi = qobject_cast<OpenAiProtocol*>(m_protocol)) {
+        openAi->setUrl(url);
     }
+}
+
+bool Client::usesOpenAiToolFormat() const
+{
+    return qobject_cast<OllamaProtocol*>(m_protocol) || qobject_cast<OpenAiProtocol*>(m_protocol);
 }
 
 void Client::setProvider(Provider provider, const QString& url, const QString& apiKey)
@@ -376,6 +422,7 @@ void Client::setProvider(Provider provider, const QString& url, const QString& a
     m_protocol->setSystemPrompt(m_systemPrompt);
     m_protocol->setEffort(m_effort);
     m_protocol->setStreamingEnabled(m_streamingEnabled);
+    m_protocol->setParallelToolCalls(m_parallelToolCalls);
     m_protocol->setContextLimit(m_contextPolicy.limitTokens);
     syncToolsToProtocol();
     m_compacting = false;
@@ -416,9 +463,11 @@ void Client::registerTool(const Tool& tool, ToolHandler handler)
     rt.validationSchema = tool.parameterSchema();
     rt.handler      = std::move(handler);
     rt.tool         = tool;
+    applyToolPolicy(rt);
     m_tools[tool.name()] = rt;
     syncToolsToProtocol();
     emit contextChanged();
+    emit toolsChanged();
 }
 
 void Client::registerTool(const QString& name,
@@ -451,9 +500,11 @@ void Client::registerTool(const QString& name,
     rt.validationSchema = parameterSchema;
     rt.handler      = std::move(handler);
     rt.tool         = Tool().setName(name).setDescription(description);
+    applyToolPolicy(rt);
     m_tools[name]   = rt;
     syncToolsToProtocol();
     emit contextChanged();
+    emit toolsChanged();
 }
 
 void Client::registerAsyncTool(const Tool& tool, AsyncToolHandler handler)
@@ -469,11 +520,17 @@ void Client::shareToolsWith(Client* other, const QStringList& except) const
     if (!other || other == this)
         return;
     for (auto it = m_tools.constBegin(); it != m_tools.constEnd(); ++it) {
-        if (!except.contains(it.key()))
-            other->m_tools[it.key()] = it.value();
+        if (except.contains(it.key()))
+            continue;
+        other->m_tools[it.key()] = it.value();
+        // As policy too, so that a later policy change on `other` keeps them.
+        other->m_toolEnabledPolicy[it.key()]      = it.value().enabled;
+        other->m_toolConfigurablePolicy[it.key()] = it.value().userConfigurable;
+        other->m_toolDeferredPolicy[it.key()]     = it.value().deferred;
     }
     other->syncToolsToProtocol();
     emit other->contextChanged();
+    emit other->toolsChanged();
 }
 
 void Client::registerBackgroundTool(const Tool& tool, ToolHandler handler)
@@ -493,8 +550,97 @@ void Client::registerBackgroundTool(const Tool& tool, ToolHandler handler)
     });
 }
 
+// ------------------------------------------------------------ tool policy
+
+void Client::applyToolPolicy(RegisteredTool& rt) const
+{
+    rt.enabled          = policyValue(m_toolEnabledPolicy, m_groupEnabledPolicy, rt.tool, true);
+    rt.userConfigurable = policyValue(m_toolConfigurablePolicy, m_groupConfigurablePolicy, rt.tool, true);
+    rt.deferred         = policyValue(m_toolDeferredPolicy, m_groupDeferredPolicy, rt.tool, false);
+}
+
+void Client::applyToolPolicies()
+{
+    for (auto it = m_tools.begin(); it != m_tools.end(); ++it)
+        applyToolPolicy(it.value());
+    syncToolsToProtocol();
+    emit contextChanged();
+    emit toolsChanged();
+}
+
+void Client::setToolGroupEnabled(const QString& group, bool enabled)
+{
+    m_groupEnabledPolicy[group] = enabled;
+    applyToolPolicies();
+}
+
+void Client::setToolUserConfigurable(const QString& toolName, bool configurable)
+{
+    m_toolConfigurablePolicy[toolName] = configurable;
+    applyToolPolicies();
+}
+
+void Client::setToolGroupUserConfigurable(const QString& group, bool configurable)
+{
+    m_groupConfigurablePolicy[group] = configurable;
+    applyToolPolicies();
+}
+
+bool Client::isToolUserConfigurable(const QString& toolName) const
+{
+    const auto it = m_tools.constFind(toolName);
+    return it == m_tools.cend() || it.value().userConfigurable;
+}
+
+bool Client::setToolEnabledByUser(const QString& toolName, bool enabled)
+{
+    const auto it = m_tools.constFind(toolName);
+    if (it == m_tools.cend() || !it.value().userConfigurable)
+        return false;
+    setToolEnabled(toolName, enabled);
+    return true;
+}
+
+QJsonObject Client::userToolSettings() const
+{
+    QJsonObject settings;
+    for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
+        if (it.value().userConfigurable)
+            settings[it.key()] = it.value().enabled;
+    }
+    return settings;
+}
+
+void Client::applyUserToolSettings(const QJsonObject& settings)
+{
+    for (auto it = settings.constBegin(); it != settings.constEnd(); ++it) {
+        if (it.value().isBool())
+            setToolEnabledByUser(it.key(), it.value().toBool());
+    }
+}
+
+void Client::setToolDeferred(const QString& toolName, bool deferred)
+{
+    m_toolDeferredPolicy[toolName] = deferred;
+    applyToolPolicies();
+}
+
+void Client::setToolGroupDeferred(const QString& group, bool deferred)
+{
+    m_groupDeferredPolicy[group] = deferred;
+    applyToolPolicies();
+}
+
+bool Client::isToolDeferred(const QString& toolName) const
+{
+    const auto it = m_tools.constFind(toolName);
+    return it != m_tools.cend() && it.value().deferred;
+}
+
 void Client::setToolEnabled(const QString& toolName, bool enabled)
 {
+    // Remembered even for a tool that is not registered (yet, or any more).
+    m_toolEnabledPolicy[toolName] = enabled;
     auto it = m_tools.find(toolName);
     if (it == m_tools.end() || it.value().enabled == enabled)
         return;
@@ -507,6 +653,7 @@ void Client::setToolEnabled(const QString& toolName, bool enabled)
     // otherwise the protocol reports "No handler registered for tool".
     syncToolsToProtocol();
     emit contextChanged();
+    emit toolsChanged();
 }
 
 bool Client::isToolEnabled(const QString& toolName) const
@@ -629,11 +776,12 @@ void Client::unregisterTool(const QString& toolName)
     m_tools.remove(toolName);
     syncToolsToProtocol();
     emit contextChanged();
+    emit toolsChanged();
 }
 
 void Client::syncToolsToProtocol()
 {
-    bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+    const bool isOllama = usesOpenAiToolFormat();   // name kept: the OpenAI tool format
 
     QList<QJsonObject> schemas;
     QMap<QString, ToolCallHandler> handlers;
@@ -647,10 +795,143 @@ void Client::syncToolsToProtocol()
             });
             continue;
         }
-        schemas.append(isOllama ? it.value().openAiSchema : it.value().claudeSchema);
+        // A deferred tool is reached through call_tool; a model that calls it
+        // by name anyway is served all the same.
+        if (!it.value().deferred)
+            schemas.append(isOllama ? it.value().openAiSchema : it.value().claudeSchema);
         handlers.insert(it.key(), wrapHandler(it.key(), it.value()));
     }
+    addDeferredToolAccess(schemas, handlers, isOllama);
     m_protocol->setTools(schemas, handlers);
+}
+
+void Client::addDeferredToolAccess(QList<QJsonObject>& schemas,
+                                   QMap<QString, ToolCallHandler>& handlers, bool openAiFormat)
+{
+    QMap<QString, int> groups;
+    for (const RegisteredTool& rt : m_tools) {
+        if (rt.enabled && rt.deferred)
+            ++groups[rt.tool.group().isEmpty() ? QStringLiteral("Other") : rt.tool.group()];
+    }
+    if (groups.isEmpty())
+        return;
+    QStringList overview;
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it)
+        overview.append(QStringLiteral("%1 (%2)").arg(it.key()).arg(it.value()));
+
+    Tool find;
+    find.setName(kFindTools)
+        .setTitle("Find tools")
+        .setDescription(QStringLiteral(
+            "More tools exist than are listed in this request: %1. Search them by what you want "
+            "to do; each match comes with its name, description and parameters. Then run it "
+            "with call_tool. Without a query every such tool is listed by name. Look here "
+            "before telling the user that something cannot be done.")
+                            .arg(overview.join(QStringLiteral(", "))))
+        .addParameter("query", "string",
+                      "Words for the task or the tool, e.g. \"read table cells\".");
+    Tool call;
+    call.setName(kCallTool)
+        .setTitle("Call tool")
+        .setDescription("Run a tool that find_tools reported. 'arguments' must match the "
+                        "parameters find_tools gave for it.")
+        .addParameter("name", "string", "Tool name, exactly as find_tools reported it.", true)
+        .addRawParameter("arguments",
+                         QJsonObject{{"type", "object"},
+                                     {"description", "The tool's parameters as an object."}});
+
+    schemas.append(openAiFormat ? find.toOpenAiApiObject() : find.toApiObject());
+    schemas.append(openAiFormat ? call.toOpenAiApiObject() : call.toApiObject());
+    handlers.insert(kFindTools, [this](const QJsonObject& input, ToolResultCallback done) {
+        done(findDeferredTools(input));
+    });
+    handlers.insert(kCallTool, [this](const QJsonObject& input, ToolResultCallback done) {
+        callDeferredTool(input, std::move(done));
+    });
+}
+
+QJsonObject Client::findDeferredTools(const QJsonObject& input) const
+{
+    const QStringList words = input.value("query").toString().toLower()
+        .split(QRegularExpression(QStringLiteral("[^a-z0-9_]+")), Qt::SkipEmptyParts);
+
+    struct Match { int score; const RegisteredTool* tool; };
+    QList<Match> matches;
+    QJsonArray catalog;
+    for (const RegisteredTool& rt : m_tools) {
+        if (!rt.enabled || !rt.deferred)
+            continue;
+        // One line per tool: the first sentence of its description.
+        QString summary = rt.tool.description();
+        const int sentenceEnd = summary.indexOf(QStringLiteral(". "));
+        if (sentenceEnd > 0)
+            summary.truncate(sentenceEnd + 1);
+        catalog.append(QJsonObject{{"name", rt.tool.name()}, {"summary", summary.left(160)}});
+
+        const QString name = rt.tool.name().toLower();
+        const QString text = (rt.tool.title() + QLatin1Char(' ') + rt.tool.group() + QLatin1Char(' ')
+                              + rt.tool.description()).toLower();
+        int score = 0;
+        for (const QString& word : words)
+            score += name.contains(word) ? 3 : (text.contains(word) ? 1 : 0);
+        if (score > 0)
+            matches.append({score, &rt});
+    }
+    if (words.isEmpty())
+        return toolOk({{"tools", catalog}});
+    if (matches.isEmpty())
+        return toolOk({{"matches", QJsonArray()},
+                       {"note", "nothing matched; these are all the tools there are"},
+                       {"tools", catalog}});
+
+    std::stable_sort(matches.begin(), matches.end(),
+                     [](const Match& a, const Match& b) { return a.score > b.score; });
+    QJsonArray found;
+    // ponytail: keyword scoring, best 6. Enough for a few hundred tools with
+    // decent descriptions; an embedding search is the upgrade if it is not.
+    for (int i = 0; i < matches.size() && i < 6; ++i) {
+        const RegisteredTool& rt = *matches[i].tool;
+        found.append(QJsonObject{{"name", rt.tool.name()},
+                                 {"description", rt.tool.description()},
+                                 {"parameters", rt.validationSchema}});
+    }
+    return toolOk({{"matches", found}, {"note", "run one with call_tool(name, arguments)"}});
+}
+
+void Client::callDeferredTool(const QJsonObject& input, ToolResultCallback done)
+{
+    const QString name = input.value("name").toString();
+    const auto it = m_tools.constFind(name);
+    if (it == m_tools.cend()) {
+        done(toolError(QStringLiteral("no tool '%1'; search with find_tools").arg(name)));
+        return;
+    }
+    if (!it.value().enabled) {
+        done(toolError(QStringLiteral("tool is disabled")));
+        return;
+    }
+
+    // Some models send the arguments as JSON text.
+    QJsonObject args = input.value("arguments").toObject();
+    if (input.value("arguments").isString())
+        args = QJsonDocument::fromJson(input.value("arguments").toString().toUtf8()).object();
+
+    // The model has only seen this schema as text, so check against it
+    // whether or not validation is switched on - and hand it back on a
+    // mistake, which saves another find_tools round.
+    QJsonObject error;
+    if (!Tool::prepareInput(it.value().validationSchema, args, &error)) {
+        error["parameters"] = it.value().validationSchema;
+        done(error);
+        return;
+    }
+
+    // Shown and logged as the tool it is, not as "call_tool".
+    emit toolInvoked(name, args);
+    wrapHandler(name, it.value())(args, [this, name, done](const QJsonObject& result) {
+        emit toolCompleted(name, result);
+        done(result);
+    });
 }
 
 // Single choke point in front of every tool execution:
@@ -731,7 +1012,52 @@ ToolCallHandler Client::wrapHandler(const QString& toolName, const RegisteredToo
 
 void Client::sendPrompt(const QString& userMessage)
 {
+    sendPrompt(userMessage, QList<QImage>());
+}
+
+bool Client::supportsImageInput() const
+{
+    return m_protocol->supportsImageInput();
+}
+
+void Client::attachImages(const QList<QImage>& images)
+{
+    m_attachedImages += images;
+}
+
+void Client::setCostLimitUsd(double usd)
+{
+    m_costLimitUsd = usd;
+}
+
+void Client::setParallelToolCalls(bool enabled)
+{
+    m_parallelToolCalls = enabled;
+    m_protocol->setParallelToolCalls(enabled);
+}
+
+void Client::sendPrompt(const QString& userMessage, const QList<QImage>& promptImages)
+{
     QLLM_GENERAL_PROFILING_FUNCTION(QLLM_COLOR_STAGE_1)
+    const QList<QImage> pictures = m_attachedImages + promptImages;
+    m_attachedImages.clear();
+
+    if (m_costLimitUsd > 0.0 && m_lastStats.sessionCostUsd >= m_costLimitUsd) {
+        emit costLimitReached(m_lastStats.sessionCostUsd);
+        emit errorOccurred(QStringLiteral("The cost limit of $%1 for this conversation is reached "
+                                          "($%2 spent). Start a new conversation to continue.")
+                               .arg(m_costLimitUsd, 0, 'f', 2)
+                               .arg(m_lastStats.sessionCostUsd, 0, 'f', 2));
+        return;
+    }
+    if (!pictures.isEmpty() && !m_protocol->supportsImageInput()) {
+        emit errorOccurred(QStringLiteral("This provider cannot take pictures. The message was not sent."));
+        return;
+    }
+    QJsonObject encoded;
+    for (const QImage& picture : pictures)
+        toolAddImage(encoded, picture);
+    const QJsonArray images = toolTakeImages(encoded);
 #if LOGGER_LIBRARY_AVAILABLE == 1
     m_logger.logInfo("sendPrompt (" + std::to_string(userMessage.size()) + " chars)");
 #endif
@@ -744,8 +1070,70 @@ void Client::sendPrompt(const QString& userMessage)
     ++m_turnsInFlight;
     if (m_compacting)
         m_promptsDuringCompaction.append(userMessage);   // re-attached once the summary is in
-    m_protocol->beginTurn(userMessage);
+    // ponytail: pictures of a prompt sent while a summary is being written
+    // are not re-attached with it.
+    if (images.isEmpty())
+        m_protocol->beginTurn(userMessage);
+    else
+        m_protocol->beginTurn(userMessage, images);
     emit contextChanged();
+}
+
+QString Client::removeLastExchange()
+{
+    if (m_turnsInFlight > 0 || m_compacting)
+        return QString();
+    QJsonArray messages = m_protocol->conversationMessages();
+    int start = -1;
+    for (int i = messages.size() - 1; i >= 0 && start < 0; --i) {
+        if (startsTurn(messages[i]))
+            start = i;
+    }
+    if (start < 0)
+        return QString();
+
+    const QJsonArray last = simplifiedHistory(QJsonArray{messages[start]});
+    const QString prompt = last.isEmpty() ? QString() : last[0].toObject()["content"].toString();
+    while (messages.size() > start)
+        messages.removeLast();
+    // Cutting the end off leaves everything before it as it was sent, so the
+    // provider's cache and any thinking blocks stay valid.
+    m_protocol->replaceHistory(messages);
+    m_history = simplifiedHistory(messages);
+    emit contextChanged();
+    return prompt;
+}
+
+bool Client::importConversation(const QJsonObject& exported)
+{
+    if (m_turnsInFlight > 0 || m_compacting)
+        return false;
+    if (!exported["messages"].isArray() || exported["provider"].toString() != m_currentProvider)
+        return false;
+
+    QJsonArray messages;
+    for (const QJsonValue& value : exported["messages"].toArray()) {
+        QJsonObject message = value.toObject();
+        // Thinking blocks are bound to the conversation that produced them;
+        // sent again from a new one, the API rejects the request.
+        if (message["content"].isArray()) {
+            QJsonArray kept;
+            for (const QJsonValue& block : message["content"].toArray()) {
+                const QString type = block.toObject()["type"].toString();
+                if (type != QLatin1String("thinking") && type != QLatin1String("redacted_thinking"))
+                    kept.append(block);
+            }
+            if (kept.isEmpty())
+                continue;
+            message["content"] = kept;
+        }
+        messages.append(message);
+    }
+    m_protocol->replaceHistory(messages);
+    m_history = simplifiedHistory(messages);
+    m_messagesAfterCompaction = 0;
+    emit contextChanged();
+    return true;
 }
 
 void Client::sendToolMessage(const QString& toolName, const QJsonObject& input)
@@ -970,7 +1358,7 @@ ContextBreakdown Client::contextBreakdown() const
     b.systemPromptTokens = estimateTokens(m_systemPrompt.toUtf8().size());
 
     qsizetype toolsChars = 0;
-    bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+    const bool isOllama = usesOpenAiToolFormat();   // name kept: the OpenAI tool format
     for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
         if (!it.value().enabled)
             continue;
@@ -1004,7 +1392,7 @@ void Client::refreshContextInfo()
             m_contextInfoProvider->fetchContextWindowTokens(m_currentModel);
         }
 
-        bool isOllama = (qobject_cast<OllamaProtocol*>(m_protocol) != nullptr);
+        const bool isOllama = usesOpenAiToolFormat();
         QJsonArray toolSchemas;
         for (auto it = m_tools.cbegin(); it != m_tools.cend(); ++it) {
             if (it.value().enabled)

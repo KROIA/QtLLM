@@ -40,6 +40,8 @@ public:
 
     // Append userMessage to internal history and send the request to the API.
     void beginTurn(const QString& userMessage) override;
+    void beginTurn(const QString& userMessage, const QJsonArray& images) override;
+    bool supportsImageInput() const override { return true; }
 
     bool cancelTurn() override;
     void clearHistory() override;
@@ -57,7 +59,7 @@ private slots:
     void onStreamFinished();
 
 private:
-    void        startNewTurn(const QString& userMessage);
+    void        startNewTurn(const QJsonObject& userMessage);
     void        sendRequest();
     void        drainQueue();
     QJsonObject buildRequestBody() const;
@@ -145,7 +147,7 @@ private:
 
     // Turn serialization queue
     bool           m_turnInProgress{false};
-    QQueue<QString> m_pendingTurns;
+    QQueue<QJsonObject> m_pendingTurns;   // complete user messages
     int            m_historyLenBeforeTurn = 0;
 
     // Tool-use loop guard

@@ -1,4 +1,7 @@
 #include "SettingsDialog.h"
+#include "ToolSettingsWidget.h"
+#include "OpenAiProtocol.h"
+#include <QListView>
 #include "UsageStatsWidget.h"
 #include "UsageHistory.h"
 #include "Client.h"
@@ -52,6 +55,8 @@ namespace QtLLM
         m_providerCombo->addItem("Microsoft Foundry (Claude)", int(Provider::Foundry));
         m_providerCombo->addItem("Claude subscription (Claude Code login)",
                                  int(Provider::ClaudeSubscription));
+        m_providerCombo->addItem("OpenAI-compatible server (LM Studio, llama.cpp, vLLM, ...)",
+                                 int(Provider::OpenAICompatible));
         formLayout->addRow("Provider:", m_providerCombo);
 
         m_apiKeyLabel = new QLabel("API Key:", settingsPage);
@@ -74,6 +79,20 @@ namespace QtLLM
         m_foundryUrlEdit->setPlaceholderText(
             "https://<resource>.services.ai.azure.com/anthropic");
         formLayout->addRow(m_foundryUrlLabel, m_foundryUrlEdit);
+
+        m_openAiUrlLabel = new QLabel("Server URL:", settingsPage);
+        m_openAiUrlEdit = new QLineEdit(settingsPage);
+        m_openAiUrlEdit->setObjectName("qtllm_openAiUrl");
+        m_openAiUrlEdit->setText("http://localhost:1234/v1");
+        m_openAiUrlEdit->setToolTip("Base URL of the server's OpenAI-compatible API, e.g. "
+                                    "http://localhost:1234/v1 (LM Studio) or http://localhost:11434/v1 (Ollama)");
+        formLayout->addRow(m_openAiUrlLabel, m_openAiUrlEdit);
+
+        m_openAiKeyLabel = new QLabel("API Key (optional):", settingsPage);
+        m_openAiKeyEdit = new QLineEdit(settingsPage);
+        m_openAiKeyEdit->setObjectName("qtllm_openAiKey");
+        m_openAiKeyEdit->setEchoMode(QLineEdit::Password);
+        formLayout->addRow(m_openAiKeyLabel, m_openAiKeyEdit);
 
         m_subscriptionLabel = new QLabel("Login:", settingsPage);
         m_subscriptionStatusLabel = new QLabel(settingsPage);
@@ -133,17 +152,11 @@ namespace QtLLM
         m_tabWidget->addTab(settingsPage, "Settings");
 
         // ---- Tools tab ----
-        // Scrollable list of all registered tools, filled by refreshToolsTab()
-        // once a Client is bound via setClient().
-        QScrollArea* toolsScroll = new QScrollArea(this);
-        toolsScroll->setWidgetResizable(true);
-        toolsScroll->setFrameShape(QFrame::NoFrame);
-        m_toolsPage = new QWidget(toolsScroll);
-        m_toolsLayout = new QVBoxLayout(m_toolsPage);
-        m_toolsLayout->setSpacing(4);
-        m_toolsLayout->addStretch();
-        toolsScroll->setWidget(m_toolsPage);
-        m_tabWidget->addTab(toolsScroll, "Tools");
+        // All registered tools with a check box each, once a Client is bound
+        // via setClient(). The same widget serves applications that have a
+        // settings window of their own.
+        m_toolSettings = new ToolSettingsWidget(this);
+        m_tabWidget->addTab(m_toolSettings, "Tools");
 
         // ---- Statistik tab ----
         m_statsWidget = new UsageStatsWidget(this);
@@ -281,6 +294,25 @@ namespace QtLLM
 
         m_subscriptionLabel->setVisible(isSubscription);
         m_subscriptionStatusLabel->setVisible(isSubscription);
+
+        const bool isOpenAi = (p == Provider::OpenAICompatible);
+        m_openAiUrlLabel->setVisible(isOpenAi);
+        m_openAiUrlEdit->setVisible(isOpenAi);
+        m_openAiKeyLabel->setVisible(isOpenAi);
+        m_openAiKeyEdit->setVisible(isOpenAi);
+    }
+
+    void SettingsDialog::setAvailableProviders(const QList<Provider>& providers)
+    {
+        auto* view = qobject_cast<QListView*>(m_providerCombo->view());
+        for (int row = 0; row < m_providerCombo->count(); ++row) {
+            const bool offered = providers.contains(static_cast<Provider>(m_providerCombo->itemData(row).toInt()));
+            if (view)
+                view->setRowHidden(row, !offered);
+        }
+        // Never leave a provider selected that is not offered.
+        if (!providers.isEmpty() && !providers.contains(provider()))
+            m_providerCombo->setCurrentIndex(m_providerCombo->findData(int(providers.first())));
     }
 
     void SettingsDialog::refreshSubscriptionStatus()
@@ -326,6 +358,7 @@ namespace QtLLM
         switch (provider()) {
         case Provider::Ollama:             m_modelCombo->setEditText("llama3.2:latest"); break;
         case Provider::ClaudeSubscription: m_modelCombo->setEditText("sonnet"); break;
+        case Provider::OpenAICompatible:   break;   // whatever the server lists
         case Provider::Claude:
         case Provider::Foundry:            m_modelCombo->setEditText(Client::defaultModel(QtLLM::Provider::Claude)); break;
         }
@@ -365,6 +398,11 @@ namespace QtLLM
             refreshSubscriptionStatus();
             m_modelFetchProtocol = new ClaudeCodeProtocol(this);
             break;
+        case Provider::OpenAICompatible:
+            if (openAiUrl().isEmpty())
+                return;
+            m_modelFetchProtocol = new OpenAiProtocol(openAiUrl(), openAiApiKey(), this);
+            break;
         }
 
         connect(m_modelFetchProtocol, &ProtocolBase::modelsFetched,
@@ -392,7 +430,7 @@ namespace QtLLM
     {
         m_client = client;
         m_compactNowButton->setEnabled(m_client != nullptr);
-        refreshToolsTab();
+        m_toolSettings->setClient(client);
         refreshContextTab();
         if (m_client) {
             connect(m_client, &Client::contextChanged, this, &SettingsDialog::refreshContextTab);
@@ -433,83 +471,23 @@ namespace QtLLM
 
     void SettingsDialog::refreshToolsTab()
     {
-        // Clear previous entries (everything except the trailing stretch).
-        // Delete synchronously — deleteLater() posted before exec() enters its
-        // event loop is not processed until the modal dialog closes, leaving
-        // the removed (never laid out) widgets visible as a pile at (0,0).
-        m_toolChecks.clear();
-        while (m_toolsLayout->count() > 1) {
-            QLayoutItem* item = m_toolsLayout->takeAt(0);
-            if (item->widget()) {
-                item->widget()->hide();
-                delete item->widget();
-            }
-            delete item;
-        }
-
-        auto addInfoLabel = [this](const QString& text) {
-            QLabel* label = new QLabel(text, m_toolsPage);
-            label->setWordWrap(true);
-            label->setStyleSheet("color: #888;");
-            m_toolsLayout->insertWidget(m_toolsLayout->count() - 1, label);
-        };
-
-        if (!m_client) {
-            addInfoLabel("No client bound — call SettingsDialog::setClient() "
-                         "to list the registered tools here.");
-            return;
-        }
-
-        const QList<Tool> tools = m_client->registeredTools();
-        if (tools.isEmpty()) {
-            addInfoLabel("No tools registered.");
-            return;
-        }
-
-        // Group tools by their (optional) group metadata; ungrouped last.
-        std::map<QString, QList<Tool>> groups;
-        for (const Tool& tool : tools)
-            groups[tool.group()].append(tool);
-
-        auto addGroup = [this](const QString& title, const QList<Tool>& groupTools) {
-            QLabel* header = new QLabel(title, m_toolsPage);
-            header->setStyleSheet("font-weight: bold; margin-top: 8px;");
-            m_toolsLayout->insertWidget(m_toolsLayout->count() - 1, header);
-
-            for (const Tool& tool : groupTools) {
-                const QString display = tool.title().isEmpty() ? tool.name()
-                                                               : tool.title();
-                QCheckBox* check = new QCheckBox(
-                    QString("%1  (%2)").arg(display, tool.name()), m_toolsPage);
-                check->setObjectName("qtllm_tool_" + tool.name());
-                check->setChecked(m_client && m_client->isToolEnabled(tool.name()));
-                m_toolsLayout->insertWidget(m_toolsLayout->count() - 1, check);
-                m_toolChecks.insert(tool.name(), check);
-
-                if (!tool.description().isEmpty()) {
-                    QLabel* desc = new QLabel(tool.description(), m_toolsPage);
-                    desc->setWordWrap(true);
-                    desc->setStyleSheet("color: #888; margin-left: 24px;");
-                    m_toolsLayout->insertWidget(m_toolsLayout->count() - 1, desc);
-                }
-            }
-        };
-
-        for (const auto& entry : groups) {
-            if (!entry.first.isEmpty())
-                addGroup(entry.first, entry.second);
-        }
-        auto ungrouped = groups.find(QString());
-        if (ungrouped != groups.end())
-            addGroup(QString::fromUtf16(u"Other"), ungrouped->second);
+        m_toolSettings->refresh();
     }
 
     void SettingsDialog::applyToolToggles()
     {
-        if (!m_client)
-            return;
-        for (auto it = m_toolChecks.constBegin(); it != m_toolChecks.constEnd(); ++it)
-            m_client->setToolEnabled(it.key(), it.value()->isChecked());
+        m_toolSettings->apply();
+    }
+
+    void SettingsDialog::setTabVisible(Tab tab, bool visible)
+    {
+        // Tabs are created in the order of the enum.
+        m_tabWidget->setTabVisible(static_cast<int>(tab), visible);
+    }
+
+    bool SettingsDialog::isTabVisible(Tab tab) const
+    {
+        return m_tabWidget->isTabVisible(static_cast<int>(tab));
     }
 
     SettingsDialog::Provider SettingsDialog::provider() const
@@ -544,6 +522,9 @@ namespace QtLLM
         case Provider::Foundry: url = foundryEndpointUrl(); key = foundryApiKey(); break;
         case Provider::Ollama:  url = ollamaUrl(); target = QtLLM::Provider::Ollama; break;
         case Provider::ClaudeSubscription: target = QtLLM::Provider::ClaudeCode;    break;
+        case Provider::OpenAICompatible:
+            url = openAiUrl(); key = openAiApiKey(); target = QtLLM::Provider::OpenAI;
+            break;
         }
 
         if (client->provider() != target) {
@@ -566,6 +547,8 @@ namespace QtLLM
     QString SettingsDialog::model() const { return m_modelCombo->currentText(); }
     QString SettingsDialog::endpointUrl() const { return m_endpointUrlEdit->text(); }
     QString SettingsDialog::ollamaUrl() const { return m_ollamaUrlEdit->text(); }
+    QString SettingsDialog::openAiUrl() const { return m_openAiUrlEdit->text().trimmed(); }
+    QString SettingsDialog::openAiApiKey() const { return m_openAiKeyEdit->text(); }
     QString SettingsDialog::systemPrompt() const { return m_systemPromptEdit->toPlainText(); }
     ContextPolicy SettingsDialog::contextPolicy() const
     {
@@ -602,6 +585,8 @@ namespace QtLLM
     void SettingsDialog::setModel(const QString& model) { m_modelCombo->setEditText(model); }
     void SettingsDialog::setEndpointUrl(const QString& url) { m_endpointUrlEdit->setText(url); }
     void SettingsDialog::setOllamaUrl(const QString& url) { m_ollamaUrlEdit->setText(url); }
+    void SettingsDialog::setOpenAiUrl(const QString& url) { m_openAiUrlEdit->setText(url); }
+    void SettingsDialog::setOpenAiApiKey(const QString& key) { m_openAiKeyEdit->setText(key); }
     void SettingsDialog::setSystemPrompt(const QString& prompt) { m_systemPromptEdit->setPlainText(prompt); }
     void SettingsDialog::setFontSizePercent(int percent) { m_fontSizeSpinBox->setValue(percent); }
 

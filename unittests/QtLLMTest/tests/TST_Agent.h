@@ -190,7 +190,7 @@ private:
         QtLLM::Agent* second = new QtLLM::Agent(makeConfig("second"));
 
         QtLLM::AgentsWidget widget;
-        QTableWidget* table = widget.findChild<QTableWidget*>();
+        QTableWidget* table = widget.findChild<QTableWidget*>("qtllm_agentsRunningTable");
         TEST_ASSERT_NOT_NULL(table);
 
         const int baseline = table->rowCount() - 2;

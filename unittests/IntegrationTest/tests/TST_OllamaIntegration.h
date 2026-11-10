@@ -20,6 +20,7 @@ public:
     {
         ADD_TEST(TST_OllamaIntegration::testModelsFetchReturnsNonEmptyList);
         ADD_TEST(TST_OllamaIntegration::testBareBaseUrlChatRequest);
+        ADD_TEST(TST_OllamaIntegration::testOpenAiCompatibleEndpoint);
     }
 
 private:
@@ -117,6 +118,50 @@ private:
         std::cout << "  Response: " << receivedText.toStdString() << "\n";
     }
 
+
+    // Provider::OpenAI against a real server: Ollama also speaks the OpenAI
+    // Chat Completions API under /v1. Streaming and a tool round.
+    TEST_FUNCTION(testOpenAiCompatibleEndpoint)
+    {
+        TEST_START;
+
+        QStringList models;
+        if (!fetchModelsOrSkip(models))
+            return;
+        // Not whatever comes first: that may be a 70 GB model.
+        const QString model = QtLLM::Client::pickFallbackModel(QtLLM::Provider::Ollama, models);
+
+        QtLLM::Client client(QtLLM::Provider::OpenAI, QString(baseUrl()) + "/v1");
+        client.setModel(model);
+        client.setSystemPrompt("Use the tools you are given. Answer in one short sentence.");
+        QtLLM::Tool tool;
+        tool.setName("get_secret_code").setDescription("Returns the secret code of this application.");
+        int calls = 0;
+        client.registerTool(tool, [&](const QJsonObject&) {
+            ++calls;
+            return QtLLM::toolOk({{"code", "KIWI-42"}});
+        });
+
+        QEventLoop loop;
+        QString text, error;
+        int deltas = 0;
+        QObject::connect(&client, &QtLLM::Client::responseDelta, [&](const QString&) { ++deltas; });
+        QObject::connect(&client, &QtLLM::Client::responseReady, [&](const QString& t) { text = t; loop.quit(); });
+        QObject::connect(&client, &QtLLM::Client::errorOccurred, [&](const QString& m) { error = m; loop.quit(); });
+        QTimer::singleShot(180000, &loop, &QEventLoop::quit);
+        client.sendPrompt("Call the get_secret_code tool and tell me the code it returns.");
+        loop.exec();
+
+        TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
+        std::cout << "  Model: " << client.model().toStdString() << ", deltas: " << deltas
+                  << ", tool calls: " << calls << "\n";
+        std::cout << "  Response: " << text.toStdString() << "\n";
+        TEST_COMPARE(client.model(), model);
+        TEST_ASSERT(calls >= 1);
+        TEST_ASSERT(text.contains("KIWI-42"));
+        TEST_ASSERT(deltas > 0);                               // it streamed
+        TEST_ASSERT(client.usageStats().inputTokens > 0);      // usage came with the stream
+    }
 };
 
 TEST_INSTANTIATE(TST_OllamaIntegration);

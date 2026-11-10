@@ -5,7 +5,14 @@
 #include "ClaudeCodeProtocol.h"
 #include <QEventLoop>
 #include <QJsonObject>
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -26,6 +33,7 @@ public:
         : Test("TST_AppInterfaceIntegration")
     {
         ADD_TEST(TST_AppInterfaceIntegration::testModelPointsAtWidgets);
+        ADD_TEST(TST_AppInterfaceIntegration::testModelOperatesControls);
     }
 
 private:
@@ -66,6 +74,120 @@ private:
         QObject::disconnect(c1);
         QObject::disconnect(c2);
         return text;
+    }
+
+    // Operating an application that has no code for the assistant at all:
+    // fill a form and click, read and edit a table, deal with a dialog.
+    TEST_FUNCTION(testModelOperatesControls)
+    {
+        TEST_START;
+
+        if (!loggedInOrSkip())
+            return;
+
+        QWidget window;
+        window.setObjectName("orderWindow");
+        window.setWindowTitle("Orders");
+        auto* layout = new QVBoxLayout(&window);
+        auto* name = new QLineEdit(&window);
+        name->setObjectName("nameEdit");
+        name->setPlaceholderText("Your name");
+        auto* color = new QComboBox(&window);
+        color->setObjectName("colorCombo");
+        color->addItems({"Red", "Green", "Blue"});
+        auto* shout = new QCheckBox("Shout", &window);
+        shout->setObjectName("shoutCheck");
+        auto* greet = new QPushButton("Greet", &window);
+        greet->setObjectName("greetButton");
+        auto* greeting = new QLabel("No greeting yet.", &window);
+        greeting->setObjectName("greetingLabel");
+        auto* about = new QPushButton("About...", &window);
+        about->setObjectName("aboutButton");
+        auto* table = new QTableWidget(0, 2, &window);
+        table->setObjectName("inventoryTable");
+        table->setHorizontalHeaderLabels({"Item", "Quantity"});
+        const QList<QStringList> rows = {{"Screws", "120"}, {"Nails", "45"}, {"Washers", "300"}, {"Hinges", "8"}};
+        for (const QStringList& row : rows) {
+            const int index = table->rowCount();
+            table->insertRow(index);
+            table->setItem(index, 0, new QTableWidgetItem(row[0]));
+            table->setItem(index, 1, new QTableWidgetItem(row[1]));
+        }
+        for (QWidget* widget : QList<QWidget*>{name, color, shout, greet, greeting, about, table})
+            layout->addWidget(widget);
+        int greetClicks = 0;
+        QObject::connect(greet, &QPushButton::clicked, [&]() {
+            ++greetClicks;
+            QString text = QString("Hello, %1 (%2)!").arg(name->text(), color->currentText());
+            greeting->setText(shout->isChecked() ? text.toUpper() : text);
+        });
+        QObject::connect(about, &QPushButton::clicked, [&]() {
+            auto* box = new QMessageBox(QMessageBox::Information, "About Orders",
+                                        "Orders version 7 - codename Pineapple.", QMessageBox::Ok, &window);
+            box->setObjectName("aboutDialog");
+            box->setAttribute(Qt::WA_DeleteOnClose);
+            box->open();
+        });
+        window.resize(520, 520);
+        window.show();
+        QEventLoop settle;
+        QTimer::singleShot(200, &settle, &QEventLoop::quit);
+        settle.exec();
+
+        QtLLM::Client client(QtLLM::Provider::ClaudeCode, QString());
+        client.setModel("haiku");
+        client.setSystemPrompt(
+            "You are an assistant inside a desktop application. Operate the application's window "
+            "with the ui_* tools on the user's behalf. Answer in one short line.");
+        QtLLM::AppInterface ui(&client, &window);
+        using Cap = QtLLM::AppInterface::Capability;
+        ui.setCapabilities(Cap::ReadWidgets | Cap::ReadProperties | Cap::SimulateInput | Cap::ReadItems
+                           | Cap::SelectItems | Cap::EditItems | Cap::WaitForUi);
+        ui.setWindowDiscoveryEnabled(true);
+
+        QStringList called;
+        QObject::connect(&client, &QtLLM::Client::toolInvoked,
+                         [&](const QString& tool, const QJsonObject&) { called.append(tool); });
+        auto report = [&](const QString& answer) {
+            std::cout << "  Response: " << answer.toStdString() << "\n";
+            std::cout << "  Tools used: " << called.join(", ").toStdString() << "\n";
+            called.clear();
+        };
+
+        QString error;
+        const QString first = ask(client,
+            "Type 'Ada' into the name field, choose Blue, tick Shout, then click Greet. "
+            "What does the greeting say?", error);
+        TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
+        TEST_ASSERT(called.contains("ui_type_text"));
+        TEST_ASSERT(called.contains("ui_click"));
+        report(first);
+        TEST_COMPARE(greeting->text(), QString("HELLO, ADA (BLUE)!"));
+        TEST_ASSERT(greetClicks >= 1);
+        TEST_ASSERT(first.contains("HELLO, ADA", Qt::CaseInsensitive));
+
+        const QString second = ask(client,
+            "Which item in the inventory table has the lowest quantity? Then set the quantity "
+            "of Screws to 500.", error);
+        TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
+        TEST_ASSERT(called.contains("ui_get_items"));
+        TEST_ASSERT(called.contains("ui_set_item_text"));
+        report(second);
+        TEST_ASSERT(second.contains("Hinges", Qt::CaseInsensitive));
+        TEST_COMPARE(table->item(0, 1)->text(), QString("500"));
+
+        const QString third = ask(client,
+            "Click the About button, tell me what the dialog that opens says, then close it.", error);
+        TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
+        report(third);
+        TEST_ASSERT(third.contains("Pineapple", Qt::CaseInsensitive));
+        bool dialogOpen = false;
+        for (QWidget* top : QApplication::topLevelWidgets())
+            dialogOpen = dialogOpen || (qobject_cast<QMessageBox*>(top) && top->isVisible());
+        TEST_ASSERT(!dialogOpen);
+
+        std::cout << "  Action log: " << ui.actionLog().size() << " entries\n";
+        TEST_ASSERT(ui.actionLog().size() >= 5);
     }
 
     TEST_FUNCTION(testModelPointsAtWidgets)

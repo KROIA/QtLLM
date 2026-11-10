@@ -1,6 +1,7 @@
 #pragma once
 #include "QtLLM.h"
 #include <QMainWindow>
+#include <QPointer>
 #include <QTextEdit>
 #include <QPushButton>
 #include <QLabel>
@@ -46,6 +47,8 @@ private:
     void buildToolBar();
     void openSettings();
     void saveConversation();
+    // Controls for the assistant to operate: a small form, a table, a dialog.
+    QWidget* buildPlaygroundPanel();
     QWidget* buildAgentDemoPanel();
     // Buttons that send ready-made requests to the assistant, one per library
     // feature: highlights, shapes, speech bubbles, tours, looking at the UI.
@@ -58,6 +61,8 @@ private:
     // the Kill button (or this window) destroys it, so it shows up in
     // Settings > Agents while it exists.
     QtLLM::Agent* demoAgent();
+    // Spawns the writer and the critic if they are not alive.
+    void ensureTeamAgents();
     // Provider, credentials and model of the chat, for an agent spawned now.
     QtLLM::AgentConfig agentConfig(const QString& name) const;
     void runAgentTask(const QString& label,
@@ -81,6 +86,8 @@ private:
     QString      m_savedOllamaUrl;
     QString      m_savedFoundryApiKey;
     QString      m_savedFoundryUrl;
+    QString      m_savedOpenAiUrl = QStringLiteral("http://localhost:1234/v1");
+    QString      m_savedOpenAiKey;
     // What the Settings dialog's Provider combo last had selected. Finer
     // grained than Client::provider(): Anthropic API and Foundry are the same
     // protocol with different credentials.
@@ -92,7 +99,11 @@ private:
     // Agent demo panel
     QString       m_lastAssistantReply;
     QtLLM::Agent* m_demoAgent   = nullptr;
+    // Two agents that talk to each other (AgentConfig::messaging).
+    QPointer<QtLLM::Agent> m_writerAgent;
+    QPointer<QtLLM::Agent> m_criticAgent;
     QtLLM::AppInterface* m_appInterface = nullptr;
+    QtLLM::AppKnowledge* m_knowledge = nullptr;
     QTextEdit*    m_agentLog    = nullptr;
     QLabel*       m_agentStatus = nullptr;
     QPushButton*  m_killAgentBtn = nullptr;

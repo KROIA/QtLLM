@@ -11,6 +11,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QUrl>
+#include <QHash>
+#include <QImage>
 #include <QMap>
 #include <QSharedPointer>
 #include <functional>
@@ -24,9 +26,12 @@ enum class Provider {
     Claude,     // Anthropic Messages API with an API key: api.anthropic.com,
                 // Microsoft Foundry, or any gateway speaking the same protocol
     Ollama,     // Ollama local inference server
-    ClaudeCode  // the user's claude.ai subscription, through the locally
+    ClaudeCode, // the user's claude.ai subscription, through the locally
                 // installed Claude Code CLI (see ClaudeCodeProtocol); url and
                 // apiKey are unused
+    OpenAI      // any server speaking the OpenAI Chat Completions API: LM
+                // Studio, llama.cpp, vLLM, Ollama's /v1, api.openai.com. url is
+                // the base ("http://localhost:1234/v1"); apiKey may be empty
 };
 
 // Called before a tool handler runs. Return false to deny execution — the
@@ -186,6 +191,45 @@ public:
     void setToolEnabled(const QString& toolName, bool enabled);
     bool isToolEnabled(const QString& toolName) const;   // false if unknown
     QStringList toolNames() const;                       // all registered
+
+    // ---- Which tools the model has, and who decides -----------------------
+    // Three independent switches per tool. Each can be set for one tool or for
+    // a whole Tool::group(); a tool's own setting wins over its group's. All
+    // of them may be set before the tool is registered and survive
+    // unregistering and re-registering it, so an application states its
+    // policy once, in one place.
+    //
+    //   enabled            the model can use the tool (setToolEnabled above)
+    //   user configurable  the user may switch it in a settings window
+    //                      (ToolSettingsWidget, the Settings dialog's Tools
+    //                      tab). false = the application alone decides: it is
+    //                      shown locked and setToolEnabledByUser() refuses.
+    //   deferred           not listed in every request, see setToolDeferred()
+    void setToolGroupEnabled(const QString& group, bool enabled);
+    void setToolUserConfigurable(const QString& toolName, bool configurable);
+    void setToolGroupUserConfigurable(const QString& group, bool configurable);
+    bool isToolUserConfigurable(const QString& toolName) const;   // true if unknown
+
+    // What a settings window calls for the user's choice. Returns false, and
+    // changes nothing, for a tool the user may not switch.
+    bool setToolEnabledByUser(const QString& toolName, bool enabled);
+    // The user's choices, for storing between sessions: {"<tool>": true|false}
+    // for every registered tool the user may switch. applyUserToolSettings()
+    // skips tools that are locked or not registered.
+    QJsonObject userToolSettings() const;
+    void applyUserToolSettings(const QJsonObject& settings);
+
+    // Deferred tools cost no tokens until they are needed. Instead of their
+    // definitions the model gets two small tools: find_tools(query) returns
+    // name, description and parameters of the matching tools, and
+    // call_tool(name, arguments) runs one - through the same checks (input
+    // validation, consent, result cap) as a direct call. The tool list sent to
+    // the provider stays the same for the whole conversation, so the prompt
+    // cache keeps working. Worth it for large tool sets used now and then; a
+    // tool the model needs in most conversations should stay listed.
+    void setToolDeferred(const QString& toolName, bool deferred);
+    void setToolGroupDeferred(const QString& group, bool deferred);
+    bool isToolDeferred(const QString& toolName) const;
     QStringList enabledToolNames() const;                // currently advertised to the model
 
     // Tool definitions incl. UI metadata (title/group/statusText) — basis for
@@ -239,6 +283,40 @@ public:
 
     // Appends userMessage to history and sends the full conversation to the API.
     void sendPrompt(const QString& userMessage);
+    // Same, with pictures the model should look at (scaled to at most 1568 px
+    // on the long edge). On a provider that cannot take pictures
+    // (supportsImageInput()) nothing is sent and errorOccurred() says so.
+    void sendPrompt(const QString& userMessage, const QList<QImage>& images);
+    bool supportsImageInput() const;
+    // Pictures for the next sendPrompt(), whoever calls it. This is how the
+    // chat widget hands over what the user pasted or dropped, without the
+    // application changing its messageSent -> sendPrompt connection.
+    void attachImages(const QList<QImage>& images);
+
+    // Takes the last exchange - the last prompt and everything that followed
+    // it - out of the conversation and returns the prompt's text. Empty, and
+    // nothing changed, when there is none or a turn is still running. The
+    // building block for "regenerate" (send it again) and "edit" (let the
+    // user change it first).
+    QString removeLastExchange();
+
+    // Continue a conversation saved with exportConversation(). The provider
+    // family must be the one it was saved with (message formats differ); the
+    // system prompt and the model are not touched. Returns false, changing
+    // nothing, for a foreign format or while a turn is running.
+    bool importConversation(const QJsonObject& exported);
+
+    // Stop sending once this conversation has cost that much: sendPrompt()
+    // then reports through errorOccurred() and costLimitReached() instead.
+    // clearConversation() starts counting again. 0 = no limit (default).
+    void setCostLimitUsd(double usd);
+    double costLimitUsd() const { return m_costLimitUsd; }
+
+    // false: the model is asked to call one tool at a time, for applications
+    // whose tools must not run side by side. Default true. Providers without
+    // such a control ignore it.
+    void setParallelToolCalls(bool enabled);
+    bool parallelToolCalls() const { return m_parallelToolCalls; }
 
 	void sendToolMessage(const QString& toolName, const QJsonObject& input);
 
@@ -337,6 +415,9 @@ signals:
     // Emitted whenever anything feeding contextBreakdown() changes (system
     // prompt, tool set, or conversation history) — hook for live context UI.
     void contextChanged();
+    // A tool was added or removed, or one of its switches changed.
+    void toolsChanged();
+    void costLimitReached(double spentUsd);
 
 private slots:
     void onProtocolResponseReady(const QString& text);
@@ -358,6 +439,7 @@ private:
     void createProtocol(Provider provider, const QString& url, const QString& apiKey);
     void connectProtocol();
     void syncToolsToProtocol();
+    bool usesOpenAiToolFormat() const;   // Ollama and OpenAI-compatible servers
     void refreshContextInfo();  // debounced; called after every contextChanged()
 
     struct RegisteredTool {
@@ -369,8 +451,18 @@ private:
         ToolHandler handler;
         AsyncToolHandler asyncHandler;   // set instead of handler for asynchronous tools
         Tool        tool;           // definition incl. UI metadata (name/description only for raw registrations)
+        // Copies of the policy below, refreshed by applyToolPolicies().
         bool        enabled = true;
+        bool        userConfigurable = true;
+        bool        deferred = false;
     };
+
+    void applyToolPolicy(RegisteredTool& rt) const;
+    void applyToolPolicies();
+    void addDeferredToolAccess(QList<QJsonObject>& schemas,
+                               QMap<QString, ToolCallHandler>& handlers, bool openAiFormat);
+    QJsonObject findDeferredTools(const QJsonObject& input) const;
+    void callDeferredTool(const QJsonObject& input, ToolResultCallback done);
 
     void recordSample(const UsageStats& stats);
     ToolCallHandler wrapHandler(const QString& toolName, const RegisteredTool& rt);
@@ -380,6 +472,13 @@ private:
     void maybeAutoCompact();
 
     QMap<QString, RegisteredTool> m_tools;
+    // Policy by tool name and by group; outlives the registration of a tool.
+    QHash<QString, bool>          m_toolEnabledPolicy, m_groupEnabledPolicy;
+    QHash<QString, bool>          m_toolConfigurablePolicy, m_groupConfigurablePolicy;
+    QHash<QString, bool>          m_toolDeferredPolicy, m_groupDeferredPolicy;
+    QList<QImage>                 m_attachedImages;
+    double                        m_costLimitUsd = 0.0;
+    bool                          m_parallelToolCalls = true;
     QJsonArray                    m_history;
     ProtocolBase*                 m_protocol;
     UsageStats                    m_lastStats;

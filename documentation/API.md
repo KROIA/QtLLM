@@ -15,13 +15,14 @@ Contents: [Provider](#qtllmprovider) · [Client](#qtllmclient) · [Agent](#qtllm
 Selects the LLM backend. Set at construction, changeable later with `Client::setProvider()`.
 
 ```cpp
-enum class Provider { Claude, Ollama, ClaudeCode };
+enum class Provider { Claude, Ollama, ClaudeCode, OpenAI };
 ```
 
 | Value | Backend |
 |---|---|
 | `Provider::Claude` | Anthropic Messages API with an API key — api.anthropic.com, Microsoft Foundry, or a compatible gateway |
 | `Provider::Ollama` | Ollama local inference server |
+| `Provider::OpenAI` | Any server speaking the OpenAI Chat Completions API: LM Studio, llama.cpp, vLLM, Ollama's `/v1`, api.openai.com. `url` is the base (`http://localhost:1234/v1`); `apiKey` may be empty |
 | `Provider::ClaudeCode` | The user's claude.ai subscription, through the installed Claude Code CLI. `url` and `apiKey` are unused. See [Providers.md](Providers.md#claude-subscription-claude-code-login) |
 
 ---
@@ -100,6 +101,11 @@ Execution order per tool call: **call cap → validation → consent → handler
 | Method | Description |
 |---|---|
 | `sendPrompt(QString)` | Append user message and send the full conversation to the API |
+| `sendPrompt(QString, QList<QImage>)` / `attachImages(list)` / `supportsImageInput()` | A prompt with pictures (scaled to 1568 px). `attachImages()` adds them to the next `sendPrompt()`, whoever calls it. Not on the subscription provider |
+| `removeLastExchange()` | Takes the last prompt and everything after it out of the conversation and returns the prompt - for "regenerate" and "edit" |
+| `importConversation(QJsonObject)` | Continue a conversation saved with `exportConversation()`. Same provider family only; thinking blocks are dropped |
+| `setCostLimitUsd(double)` | Stop sending once the conversation has cost that much; signal `costLimitReached(spent)` |
+| `setParallelToolCalls(bool)` | false: the model is asked to call one tool at a time |
 | `sendToolMessage(QString toolName, QJsonObject input)` | Start a model turn from application code, formatted as a tool event (e.g. "timer finished"). Costs tokens like any request |
 | `cancelRequest()` | Abort the turn in flight: request cancelled, queued prompts dropped, the unanswered prompt removed from the history. Emits `requestFinished()` only. A handler already running is not interrupted |
 | `clearConversation()` | Reset history and session statistics. Tools and settings are kept |
@@ -194,6 +200,27 @@ Calls are served strictly in order. A `Client` holds one history and permits one
 | `stateChanged(Agent::State state)` | Any state transition |
 | `budgetExceeded(double spentUsd)` | Once, when spend passes `costCapUsd` |
 
+### Agents talking to each other
+
+```cpp
+QtLLM::AgentConfig config;
+config.name        = "critic";
+config.description = "Gives a blunt opinion on a text.";   // what the others see
+config.messaging   = true;                                 // off by default
+auto* critic = new QtLLM::Agent(config, this);
+
+QtLLM::registerAgentMessagingTools(&chatClient);           // optional: the chat may write to agents too
+```
+
+An agent with `messaging` gets two tools and becomes addressable; agents without it are invisible to the others.
+
+| Tool | Does |
+|---|---|
+| `list_agents` | The agents that accept messages: name, description, state, queue length - and the caller's own name |
+| `message_agent(to, message)` | Hands the message to that agent as a task (`[Message from agent 'name']` in front) and returns its reply as the tool result |
+
+The receiver keeps its own conversation and works through its messages in order. A message to an agent that is itself waiting for the sender's reply is refused with an explanation - otherwise both would wait until the tool times out. An agent destroyed before it answers ends the call with an error. Subagents started through `run_subagent` do not inherit these tools; set `messaging` in the config they are spawned from if they should have them. Every message shows up as a task in the receiver's record, and so in the Agents tab.
+
 ### Subagents: letting the model delegate
 
 ```cpp
@@ -257,6 +284,11 @@ Process-wide list of live agents. Agents add themselves on construction and remo
 | `agents()` | Live agents, in spawn order |
 | `agentSpawned(Agent*)` | Signal: an agent was constructed |
 | `agentDestroyed(QString name)` | Signal: an agent was destroyed |
+| `finishedAgents()` | `QList<AgentRecord>` of destroyed agents, newest first, at most 200. In memory only: gone when the process ends |
+| `clearFinished()` | Forget the history |
+| `agentFinished(AgentRecord)` | Signal: an agent was destroyed; its final record (emitted before `agentDestroyed`) |
+
+`Agent::record()` returns the same `AgentRecord` for a living agent. It holds name, provider, model, system prompt, spawn / finish time, totals (turns, tool calls, tokens, cost, working time) and up to 50 tasks, each with prompt, reply or error, duration, tokens, cost and its tool calls (name, input, result, duration; input and result cut at 4000 characters).
 
 ---
 
@@ -271,6 +303,8 @@ auto* widget = new QtLLM::AgentsWidget(this);   // that is the entire setup
 It binds to `AgentRegistry::instance()` itself, so it needs no wiring and no client — construct it anywhere and every agent in the process appears. [`SettingsDialog`](#qtllmsettingsdialog) already embeds one as its **Agents** tab; construct your own only if you want the list somewhere else, such as a docked debug panel.
 
 The table rebuilds once a second so uptime and in-flight counters keep moving, and immediately on `agentSpawned` / `agentDestroyed`. Selection survives a rebuild, so the detail pane does not jump while it is being read.
+
+Below the running agents is a second table, **Finished agents**: every agent that has ended in this session - including the subagents the model starts through `run_subagent`, which live only for one task. Clicking a row in either table shows what the agent was called for, its chat log, every tool call with input and result, how long it worked, tokens and cost. **Clear history** empties it; `setHistoryVisible(false)` hides that part. Both tables use the full width of the tab.
 
 There are no kill or pause controls, on purpose: the application owns its agents, and a widget deleting an object the app still holds a pointer to is a crash waiting to happen. Delete the agent yourself and the row disappears.
 
@@ -472,6 +506,8 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 | `saveConversationRequested()` | Save clicked and **no** client bound (fallback for custom handling) |
 | `interviewFinished(QJsonObject result)` | An interview card was submitted or skipped |
 
+Optional features, off by default: `setImageInputEnabled(bool)` (paste, drop or attach pictures; `attachImages()` from code; signal `imagesSubmitted()` when no client is bound), `setRegenerateEnabled(bool)` (regenerate / edit the last message), `setLoadButtonVisible(bool)` and `loadConversation(QJsonObject)` (continue a saved conversation).
+
 ---
 
 ## `QtLLM::SettingsDialog`
@@ -484,6 +520,10 @@ The **Agents** tab is a read-only view of every live [`Agent`](#qtllmagent) in t
 |---|---|
 | `provider()` / `setProvider(Provider)` | `SettingsDialog::Provider { Claude, Ollama, Foundry, ClaudeSubscription }` — values are stable, safe to persist as int |
 | `apiKey()` / `setApiKey`, `model()` / `setModel`, `endpointUrl()` / `setEndpointUrl`, `ollamaUrl()` / `setOllamaUrl`, `foundryApiKey()` / `setFoundryApiKey`, `foundryEndpointUrl()` / `setFoundryEndpointUrl`, `systemPrompt()` / `setSystemPrompt`, `fontSizePercent()` / `setFontSizePercent` | Field access. Each provider keeps its own credentials. `foundryEndpointUrl()` completes a bare resource URL with `/v1/messages` |
+| `setTabVisible(Tab, bool)` | Hide a tab (`Settings, Tools, Statistics, Context, Agents`) |
+| `setAvailableProviders(QList<Provider>)` | Which providers the user can choose from |
+| `toolSettingsWidget()` | The Tools tab's list (`ToolSettingsWidget`) |
+| `openAiUrl()` / `openAiApiKey()` and setters | Fields of the OpenAI-compatible provider |
 | `applyTo(Client*)` | Push provider, credentials, model and system prompt into a client in one call. Switches the client's provider only when the kind of backend changed |
 | `effort()` / `setEffort`, `contextPolicy()` / `setContextPolicy` | Effort combo on the Settings tab; context limit, automatic compaction and strategy on the Context tab (which also has **Compact now**) |
 | `setAvailableModels(QStringList)` | Populate the model combo (preserves current text) |
@@ -726,6 +766,11 @@ ui->setCapabilities(Cap::ReadActions | Cap::ReadWidgets | Cap::Screenshots
 | `Tours` | `ui_show_tour` (all at once, or one at a time with Back / Next) |
 | `WidgetColors` | `ui_set_widget_colors` (background, text, border of one widget), `ui_restore_widget_colors` (one widget, or all) |
 | `Themes` | `ui_list_themes`, `ui_set_theme` - only among the themes the application registered |
+| `SimulateInput` | `ui_click` (real mouse events, so `clicked()` fires), `ui_type_text`, `ui_press_key` (shortcuts fire while the application is active) |
+| `ReadItems` | `ui_get_items`: cells of lists, tables, trees, combo boxes and tabs; paging, filter, tree paths |
+| `SelectItems` | `ui_select_item`: by row or text; extend, expand, activate |
+| `EditItems` | `ui_set_item_text`: text and check state through the model, where the item allows it |
+| `WaitForUi` | `ui_wait_for`: until a widget is visible / hidden / enabled / disabled / exists / gone, a property has a value, or a window opened / closed |
 
 Shared helper tools appear with the capabilities that need them: `ui_remove_overlay`, `ui_clear_overlays`, `ui_close_bubble`, `ui_clear_bubbles`, `ui_list_guidance`.
 
@@ -739,6 +784,9 @@ Shared helper tools appear with the capabilities that need them: `ui_remove_over
 | `clearGuidance()` | Remove all highlights, shapes, bubbles and tours |
 | `setAnimationsEnabled(bool)` | Off: overlays are shown static (reduced motion) |
 | `resetWidgetColors()` | Give every widget recoloured by the model its original colours back |
+| `setWindowDiscoveryEnabled(bool)` | Dialogs and other windows the application opens become visible to all tools (and to `ui_list_windows`) without `addRoot()` |
+| `resetPropertyChanges()` | Undo every `ui_set_property` (the model has `ui_undo_property_change`) |
+| `actionLog()` / `clearActionLog()`, signal `actionPerformed(ActionRecord)` | What the model changed in the application: time, tool, input, ok, message. Text typed into password fields is redacted |
 | `registerTheme(name, description, apply)` | A theme the model may select; `apply` does whatever switching means in the application |
 | `registerTheme(name, description, QPalette, styleName = {}, styleSheet = {})` | The common case: application palette, optionally a `QStyle` ("Fusion") and an application style sheet |
 | `registerStandardThemes()` | Registers `default` (the look at the time of the call) and `dark` (Fusion with `AppInterface::darkPalette()`) |
@@ -749,6 +797,66 @@ Widgets are addressed by id: the path of object names (`mainWindow/saveButton`),
 Widget colours are applied through a style rule that selects the one widget, so the widgets inside it keep their look; only values that parse as a colour are accepted. The original style sheet is kept and put back on restore. Themes are a closed list: the model cannot define colours for the whole application, it can only pick a registered name.
 
 The drawing classes are usable directly: `GuideOverlay::forWindow(w)->highlight(widget)`, `BubbleManager::forWindow(w)->showBubble(widget, text)`.
+
+---
+
+## Switching features on and off
+
+Everything optional is a switch the application sets in code; nothing below is on unless stated.
+
+| What | Switch |
+|---|---|
+| One tool | `Client::setToolEnabled(name, bool)` - also before the tool is registered; survives re-registration |
+| A group of tools | `Client::setToolGroupEnabled(group, bool)` (`Tool::group()`); a tool's own setting wins |
+| May the user switch a tool? | `Client::setToolUserConfigurable(name, bool)` / `setToolGroupUserConfigurable(group, bool)`. Locked tools are shown greyed out in the Tools tab (or hidden: `ToolSettingsWidget::setLockedToolsVisible(false)`) and `setToolEnabledByUser()` refuses them |
+| Tools on demand | `Client::setToolDeferred(name, bool)` / `setToolGroupDeferred(group, bool)` |
+| UI tools | `AppInterface::setCapabilityEnabled(capability, bool)`, one flag per tool family; `setWindowDiscoveryEnabled(bool)` |
+| Application help | `AppKnowledge::setEnabled(bool)` |
+| Subagents | call `registerSubagentTool()` or not; `shareTools` argument |
+| Agents talking to each other | `AgentConfig::messaging` per agent; `registerAgentMessagingTools(client)` for the chat |
+| Built-in tools | the list passed to `BuiltinTools::registerTools()` |
+| Chat: pictures, regenerate / edit, load | `ChatDockWidget::setImageInputEnabled`, `setRegenerateEnabled`, `setLoadButtonVisible` |
+| Settings dialog tabs, providers | `SettingsDialog::setTabVisible(Tab, bool)`, `setAvailableProviders(list)` |
+| Agents tab history | `AgentsWidget::setHistoryVisible(bool)` |
+| Streaming, parallel tool calls, cost limit | `Client::setStreamingEnabled`, `setParallelToolCalls`, `setCostLimitUsd` |
+
+### Who decides about a tool
+
+```cpp
+client.setToolEnabled("write_text_file", false);            // the application's decision ...
+client.setToolUserConfigurable("write_text_file", false);   // ... and the user cannot change it
+client.setToolGroupUserConfigurable("App UI", false);       // a whole group is the application's business
+
+// The user's own choices, kept between sessions:
+settings.setValue("tools", QJsonDocument(client.userToolSettings()).toJson());
+client.applyUserToolSettings(QJsonDocument::fromJson(settings.value("tools").toByteArray()).object());
+```
+
+`userToolSettings()` contains only tools the user may switch, and `applyUserToolSettings()` skips locked ones, so a stored file can never unlock anything. For the user interface use the Settings dialog's Tools tab, or put a `ToolSettingsWidget` into your own settings window:
+
+```cpp
+auto* tools = new QtLLM::ToolSettingsWidget(myPreferencesPage);
+tools->setClient(&client);
+tools->setApplyImmediately(true);     // or call tools->apply() from your OK button
+```
+
+### Tools on demand
+
+A deferred tool is not sent with every request. The model gets two small tools instead - `find_tools(query)` (name, description and parameters of matching tools) and `call_tool(name, arguments)` - and the call runs through the same input check, consent hook and result cap as a direct one. The tool list of the request never changes during a conversation, so the prompt cache keeps working. Defer large groups that are needed now and then; keep what most conversations need listed.
+
+---
+
+## `QtLLM::AppKnowledge`
+
+What the application knows about itself, for the model to look up: how-to texts, terms, limits. Topics cost no tokens until read.
+
+```cpp
+auto* help = new QtLLM::AppKnowledge(&client, this);
+help->addTopic("export-pdf", "Exporting a document as PDF", text, {"save as pdf"});
+help->addTopicsFromDirectory(":/help");    // every *.md / *.txt; first line = title
+```
+
+Registers `app_help_search(query)` and `app_help_read(id, offset)` while there is at least one topic. `setEnabled(false)` withdraws them.
 
 ---
 

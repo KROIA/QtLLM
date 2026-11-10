@@ -50,6 +50,22 @@ public:
 
     // Append userMessage to internal history and send the request to the API.
     virtual void beginTurn(const QString& userMessage) = 0;
+    // Same, with pictures attached to the user message. `images` has the
+    // format of toolTakeImages(): [{"media_type":"image/png","data":"<base64>",
+    // "width":W,"height":H}, ...]. The default drops the pictures; a provider
+    // that can show them to the model overrides this and supportsImageInput().
+    virtual void beginTurn(const QString& userMessage, const QJsonArray& images)
+    {
+        Q_UNUSED(images);
+        beginTurn(userMessage);
+    }
+    virtual bool supportsImageInput() const { return false; }
+
+    // false: the model is told to call at most one tool per response, for
+    // applications whose tools must not run side by side. Providers without
+    // such a control ignore it. Default true.
+    virtual void setParallelToolCalls(bool enabled) { m_parallelToolCalls = enabled; }
+    bool parallelToolCalls() const { return m_parallelToolCalls; }
 
     // Abort the in-flight turn (and drop queued ones): the pending request is
     // cancelled, everything the turn appended to the history is rolled back and
@@ -96,6 +112,7 @@ signals:
 protected:
     Effort m_effort = Effort::Default;
     bool   m_streamingEnabled = true;
+    bool   m_parallelToolCalls = true;
 };
 
 } // namespace QtLLM

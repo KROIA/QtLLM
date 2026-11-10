@@ -176,7 +176,8 @@ private:
 
             ui.setCapabilityEnabled(Cap::ReadWidgets, true);
             TEST_COMPARE(uiTools(client),
-                         QStringList({"ui_find_widgets", "ui_get_widget", "ui_get_widget_tree"}));
+                         QStringList({"ui_find_widgets", "ui_get_widget", "ui_get_widget_tree",
+                                      "ui_list_windows"}));
 
             ui.setCapabilityEnabled(Cap::ModifyLayouts, true);
             ui.setCapabilityEnabled(Cap::ReadWidgets, false);
@@ -195,15 +196,17 @@ private:
             TEST_COMPARE(uiTools(client),
                          QStringList({"ui_find_widgets", "ui_get_layout", "ui_get_properties",
                                       "ui_get_widget", "ui_get_widget_tree", "ui_list_actions",
-                                      "ui_modify_layout", "ui_screenshot", "ui_set_property",
-                                      "ui_trigger_action", "ui_undo_layout_change"}));
+                                      "ui_list_windows", "ui_modify_layout", "ui_screenshot",
+                                      "ui_set_property", "ui_trigger_action",
+                                      "ui_undo_layout_change", "ui_undo_property_change"}));
 
             for (const QtLLM::Tool& tool : client.registeredTools()) {
                 if (!tool.name().startsWith("ui_"))
                     continue;
                 TEST_COMPARE(tool.group(), QString("App UI"));
                 const bool writes = tool.name() == "ui_trigger_action" || tool.name() == "ui_set_property"
-                                 || tool.name() == "ui_modify_layout" || tool.name() == "ui_undo_layout_change";
+                                 || tool.name() == "ui_modify_layout" || tool.name() == "ui_undo_layout_change"
+                                 || tool.name() == "ui_undo_property_change";
                 TEST_ASSERT(tool.isReadOnly() == !writes);
             }
         }

@@ -1,6 +1,7 @@
 #pragma once
 #include "QtLLM_base.h"
 #include <QObject>
+#include <QDateTime>
 #include <QFlags>
 #include <QHash>
 #include <QJsonObject>
@@ -51,6 +52,11 @@ public:
         Tours            = 1 << 12,  // ui_show_tour
         WidgetColors     = 1 << 13,  // ui_set_widget_colors, ui_restore_widget_colors
         Themes           = 1 << 14,  // ui_list_themes, ui_set_theme
+        SimulateInput    = 1 << 15,  // ui_click, ui_type_text, ui_press_key
+        ReadItems        = 1 << 16,  // ui_get_items (lists, tables, trees, combo boxes)
+        SelectItems      = 1 << 17,  // ui_select_item
+        EditItems        = 1 << 18,  // ui_set_item_text
+        WaitForUi        = 1 << 19,  // ui_wait_for
     };
     Q_DECLARE_FLAGS(Capabilities, Capability)
 
@@ -66,6 +72,12 @@ public:
     void addRoot(QWidget* window);
     // The widget and everything below it are hidden from every tool.
     void excludeWidget(QWidget* widget);
+    // On: every visible top-level window of the application (dialogs, other
+    // main windows, tool windows) counts as a root, so the model sees a dialog
+    // an action opened. Popups, tooltips, the chat dock and excluded widgets
+    // stay invisible. Off by default.
+    void setWindowDiscoveryEnabled(bool enabled);
+    bool windowDiscoveryEnabled() const { return m_windowDiscovery; }
     // Property names ui_set_property may write. Default: text, value, checked,
     // currentIndex, currentText, enabled, visible, toolTip.
     void setWritableProperties(const QStringList& names);
@@ -73,6 +85,21 @@ public:
     // Reverts every layout modification made through ui_modify_layout, e.g.
     // when the conversation is cleared.
     void resetLayoutChanges();
+    // Reverts every change made through ui_set_property, newest first.
+    void resetPropertyChanges();
+
+    // What the model did: every call of a ui_* tool that is not read-only,
+    // newest last, at most 500 entries.
+    struct ActionRecord
+    {
+        QDateTime   time;
+        QString     tool;
+        QJsonObject input;
+        bool        ok = false;
+        QString     message;   // the error message, or the result's message
+    };
+    QList<ActionRecord> actionLog() const { return m_actionLog; }
+    void clearActionLog();
 
     // Puts back the colours of every widget changed through
     // ui_set_widget_colors, e.g. when the conversation is cleared.
@@ -128,6 +155,21 @@ public:
     QJsonObject modifyLayout(const QJsonObject& args);
     QJsonObject undoLayoutChange(const QJsonObject& args);
     QJsonObject screenshot(const QJsonObject& args);
+    // Input simulation (capability SimulateInput), AppInterfaceInput.cpp.
+    QJsonObject click(const QJsonObject& args);
+    QJsonObject typeText(const QJsonObject& args);
+    QJsonObject pressKey(const QJsonObject& args);
+    // ui_wait_for (capability WaitForUi): polls every 100 ms and calls
+    // `finish` once with the result; stops early when `cancelled` returns true.
+    void waitFor(const QJsonObject& args, std::function<void(const QJsonObject&)> finish,
+                 std::function<bool()> cancelled = std::function<bool()>());
+    QJsonObject listWindows(const QJsonObject& args);
+    QJsonObject undoPropertyChange(const QJsonObject& args);
+    // Item views (capabilities ReadItems, SelectItems, EditItems),
+    // AppInterfaceItems.cpp.
+    QJsonObject getItems(const QJsonObject& args);
+    QJsonObject selectItem(const QJsonObject& args);
+    QJsonObject setItemText(const QJsonObject& args);
     QJsonObject setWidgetColors(const QJsonObject& args);
     QJsonObject restoreWidgetColors(const QJsonObject& args);
     QJsonObject listThemes(const QJsonObject& args);
@@ -155,6 +197,7 @@ public:
 
 signals:
     void themeChanged(const QString& name);
+    void actionPerformed(const QtLLM::AppInterface::ActionRecord& record);
 
 private:
     struct ToolEntry;
@@ -166,10 +209,19 @@ private:
     // Registers/unregisters the tools of the guidance capabilities
     // (Highlights ... Tours); filled in by the visual guidance feature.
     void syncGuidanceTools();
+    // Same pattern for SimulateInput + WaitForUi (AppInterfaceInput.cpp) and
+    // for ReadItems + SelectItems + EditItems (AppInterfaceItems.cpp): unregister
+    // the names in the list, then register what the enabled capabilities need.
+    void syncInputTools();
+    void syncItemTools();
     QJsonObject addOverlay(QWidget* window, QWidget* anchor, QJsonObject spec);
 
     QString segmentFor(QWidget* widget) const;
     bool excludedItself(QWidget* widget) const;
+    // A visible window that window discovery makes a root.
+    bool isDiscoverableWindow(QWidget* widget) const;
+    void onToolInvoked(const QString& name, const QJsonObject& input);
+    void onToolCompleted(const QString& name, const QJsonObject& result);
     // Empty object when found, otherwise the error result to return.
     QJsonObject resolve(const QString& id, QWidget*& widget) const;
     QList<ActionEntry> collectActions() const;
@@ -184,7 +236,15 @@ private:
     QStringList                    m_writable;
     Capabilities                   m_capabilities;
     QList<std::function<void()>>   m_layoutUndo;
+    // Each step reverts one ui_set_property; false when the widget is gone.
+    QList<std::function<bool()>>   m_propertyUndo;
+    bool                           m_windowDiscovery = false;
+    QList<ActionRecord>            m_actionLog;
+    // Mutating ui_* calls invoked but not completed yet, in call order.
+    QList<QPair<QString, QJsonObject>> m_pendingActions;
     QStringList                    m_guidanceTools;   // names registered by syncGuidanceTools()
+    QStringList                    m_inputTools;      // ... by syncInputTools()
+    QStringList                    m_itemTools;       // ... by syncItemTools()
     // Widgets recoloured by ui_set_widget_colors; the original style sheet and
     // the colours in effect are kept on the widget as dynamic properties.
     QList<QPointer<QWidget>>       m_colored;

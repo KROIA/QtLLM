@@ -2,6 +2,11 @@
 #include "ModelManagerDialog.h"
 #include <QAction>
 #include <QStyle>
+#include <QCheckBox>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -23,6 +28,7 @@
 // setApplicationName in main.cpp).
 static const char* kShowToolCallsKey = "debug/showToolCalls";
 static const char* kModelKey = "llm/model";
+static const char* kToolsKey = "llm/userToolSettings";
 
 static const char* kDefaultSystemPrompt =
     "You are a old grumpy assistant embedded in a Qt desktop application."
@@ -169,7 +175,10 @@ void ChatWindow::buildUi()
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->addWidget(statsBox);
     centralLayout->addWidget(m_demoBox = buildFeatureDemoPanel());
-    centralLayout->addWidget(m_agentBox = buildAgentDemoPanel(), 1);
+    auto* rightColumn = new QVBoxLayout();
+    rightColumn->addWidget(m_agentBox = buildAgentDemoPanel(), 1);
+    rightColumn->addWidget(buildPlaygroundPanel());
+    centralLayout->addLayout(rightColumn, 1);
     setCentralWidget(central);
 
     buildToolBar();
@@ -281,6 +290,21 @@ QWidget* ChatWindow::buildFeatureDemoPanel()
          "window, the other writes a haiku about desktop software. Then set the window title to "
          "the first result and show me the haiku."},
 
+        {"Operate the application", "demoForm", "Fill a form",
+         "In the Playground panel: type 'Ada' into the name field, choose Blue, tick Shout, "
+         "click Greet and tell me what the greeting says."},
+        {"Operate the application", "demoReadTable", "Read a table",
+         "Read the inventory table in the Playground panel and tell me which item has the "
+         "lowest quantity."},
+        {"Operate the application", "demoEditTable", "Edit a table",
+         "In the inventory table, set the quantity of Screws to 500 and select that row."},
+        {"Operate the application", "demoDialog", "Handle a dialog",
+         "Click the About button in the Playground panel, tell me what the dialog that opens "
+         "says, then close it."},
+        {"Operate the application", "demoHelp", "Use the app's help",
+         "How do I change the colour theme of this application? Look it up in the "
+         "application's help and then show me where."},
+
         {"Ask and tidy up", "demoQuestion", "Ask me a question",
          "Ask me which of three accent colours I prefer, using a question card, then confirm my choice."},
         {"Ask and tidy up", "demoClear", "Remove all markers",
@@ -310,6 +334,70 @@ QWidget* ChatWindow::buildFeatureDemoPanel()
         if (++column == 2) { column = 0; ++row; }
     }
     layout->setRowStretch(row + 1, 1);
+    return box;
+}
+
+// Ordinary application widgets with no code for the assistant at all: it
+// operates them the way a user would, through AppInterface.
+QWidget* ChatWindow::buildPlaygroundPanel()
+{
+    auto* box = new QGroupBox("Playground", this);
+    box->setObjectName("playground");
+    auto* layout = new QVBoxLayout(box);
+
+    auto* form = new QHBoxLayout();
+    auto* name = new QLineEdit(box);
+    name->setObjectName("nameEdit");
+    name->setPlaceholderText("Your name");
+    auto* color = new QComboBox(box);
+    color->setObjectName("colorCombo");
+    color->addItems({"Red", "Green", "Blue"});
+    auto* shout = new QCheckBox("Shout", box);
+    shout->setObjectName("shoutCheck");
+    auto* greet = new QPushButton("Greet", box);
+    greet->setObjectName("greetButton");
+    auto* about = new QPushButton("About...", box);
+    about->setObjectName("aboutButton");
+    form->addWidget(name, 1);
+    form->addWidget(color);
+    form->addWidget(shout);
+    form->addWidget(greet);
+    form->addWidget(about);
+    layout->addLayout(form);
+
+    auto* greeting = new QLabel("No greeting yet.", box);
+    greeting->setObjectName("greetingLabel");
+    layout->addWidget(greeting);
+
+    auto* table = new QTableWidget(0, 3, box);
+    table->setObjectName("inventoryTable");
+    table->setHorizontalHeaderLabels({"Item", "Quantity", "Location"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setFixedHeight(150);
+    const QList<QStringList> rows = {{"Screws", "120", "Shelf A"}, {"Nails", "45", "Shelf A"},
+                                     {"Washers", "300", "Shelf B"}, {"Hinges", "8", "Drawer 2"}};
+    for (const QStringList& row : rows) {
+        const int index = table->rowCount();
+        table->insertRow(index);
+        for (int column = 0; column < row.size(); ++column)
+            table->setItem(index, column, new QTableWidgetItem(row[column]));
+    }
+    layout->addWidget(table);
+
+    connect(greet, &QPushButton::clicked, this, [name, shout, greeting, color]() {
+        QString text = QString("Hello, %1!").arg(name->text().isEmpty() ? "stranger" : name->text());
+        if (shout->isChecked())
+            text = text.toUpper();
+        greeting->setText(text);
+        greeting->setStyleSheet(QString("color: %1; font-weight: bold;").arg(color->currentText().toLower()));
+    });
+    connect(about, &QPushButton::clicked, this, [this]() {
+        QMessageBox::information(this, "About the Playground",
+            "These controls know nothing about the assistant. It fills them in, clicks them "
+            "and reads them through QtLLM::AppInterface.");
+    });
     return box;
 }
 
@@ -400,6 +488,24 @@ QWidget* ChatWindow::buildAgentDemoPanel()
     layout->addWidget(usageBtn);
     layout->addWidget(titleBtn);
     layout->addWidget(moodBtn);
+    auto* teamBtn = new QPushButton("Agents: writer asks critic", box);
+    teamBtn->setObjectName("teamButton");
+    teamBtn->setToolTip("Two agents with AgentConfig::messaging. The writer drafts a slogan and "
+                        "asks the critic for an opinion through message_agent. Both stay alive "
+                        "afterwards, so the chat assistant can write to them as well.");
+    layout->addWidget(teamBtn);
+    connect(teamBtn, &QPushButton::clicked, this, [this]() {
+        ensureTeamAgents();
+        logAgent("[writer] asking...");
+        m_writerAgent->ask(
+            "Draft a slogan of at most eight words for a desktop chat application. Then ask the "
+            "agent 'critic' for its opinion with message_agent, and reply with the slogan and "
+            "the critic's opinion.",
+            [this](const QString& text, bool ok) {
+                logAgent(QString(ok ? "[writer] %1" : "[writer] failed: %1").arg(text));
+                updateAgentStatus();
+            });
+    });
     layout->addWidget(m_killAgentBtn);
 
     m_agentStatus = new QLabel("No agent running.", box);
@@ -452,12 +558,14 @@ QWidget* ChatWindow::buildAgentDemoPanel()
     });
 
     connect(m_killAgentBtn, &QPushButton::clicked, this, [this]() {
-        if (!m_demoAgent) {
+        if (!m_demoAgent && !m_writerAgent && !m_criticAgent) {
             logAgent("No agent is running.");
             return;
         }
         delete m_demoAgent;   // pending callbacks are dropped, not invoked
         m_demoAgent = nullptr;
+        delete m_writerAgent.data();
+        delete m_criticAgent.data();
         logAgent("Agent killed. Settings > Agents is empty again; the next task spawns a "
                  "fresh one with whatever provider is configured then.");
         updateAgentStatus();
@@ -501,6 +609,32 @@ QtLLM::Agent* ChatWindow::demoAgent()
                       config.model));
     updateAgentStatus();
     return m_demoAgent;
+}
+
+void ChatWindow::ensureTeamAgents()
+{
+    auto spawn = [this](const QString& name, const QString& description, const QString& prompt) {
+        QtLLM::AgentConfig config = agentConfig(name);
+        config.maxTokens    = 300;
+        config.messaging    = true;          // can be found and written to, and can write
+        config.description  = description;   // what list_agents tells the others
+        config.systemPrompt = prompt;
+        auto* agent = new QtLLM::Agent(config, this);
+        connect(agent, &QtLLM::Client::toolInvoked, this, [this, name](const QString& tool, const QJsonObject& input) {
+            if (tool == "message_agent")
+                logAgent(QString("[%1 -> %2] %3").arg(name, input["to"].toString(), input["message"].toString()));
+        });
+        connect(agent, &QtLLM::Agent::stateChanged, this, [this](QtLLM::Agent::State) { updateAgentStatus(); });
+        logAgent(QString("Spawned agent \"%1\" (%2)").arg(name, description));
+        return agent;
+    };
+    if (!m_writerAgent)
+        m_writerAgent = spawn("writer", "Writes short texts and slogans.",
+                              "You write short texts. Plain text, no preamble.");
+    if (!m_criticAgent)
+        m_criticAgent = spawn("critic", "Gives a blunt one-sentence opinion on a text.",
+                              "You are a critic. Give your opinion in one blunt sentence.");
+    updateAgentStatus();
 }
 
 QtLLM::AgentConfig ChatWindow::agentConfig(const QString& name) const
@@ -562,9 +696,10 @@ void ChatWindow::updateAgentStatus()
         return;
 
     if (!m_demoAgent) {
-        m_agentStatus->setText("No agent running.");
+        const bool team = m_writerAgent || m_criticAgent;
+        m_agentStatus->setText(team ? "Agents 'writer' and 'critic' are alive." : "No agent running.");
         if (m_killAgentBtn)
-            m_killAgentBtn->setEnabled(false);
+            m_killAgentBtn->setEnabled(team);
         return;
     }
 
@@ -653,7 +788,20 @@ void ChatWindow::registerTools()
         | Cap::Screenshots                                // see it (vision models)
         | Cap::Highlights | Cap::Shapes | Cap::Animations // point at things
         | Cap::SpeechBubbles | Cap::Tours                 // explain in place
-        | Cap::WidgetColors | Cap::Themes);               // restyle
+        | Cap::WidgetColors | Cap::Themes                 // restyle
+        | Cap::SimulateInput                              // click, type, press keys
+        | Cap::ReadItems | Cap::SelectItems | Cap::EditItems  // lists, tables, trees
+        | Cap::WaitForUi);                                // wait for a widget or a dialog
+    // Dialogs and other windows the application opens are picked up as well.
+    m_appInterface->setWindowDiscoveryEnabled(true);
+    // What the assistant changes in the application is shown in the agent log.
+    connect(m_appInterface, &QtLLM::AppInterface::actionPerformed, this,
+            [this](const QtLLM::AppInterface::ActionRecord& action) {
+        logAgent(QString("[assistant] %1 %2%3")
+                     .arg(action.tool,
+                          QString::fromUtf8(QJsonDocument(action.input).toJson(QJsonDocument::Compact)),
+                          action.ok ? QString() : " - failed: " + action.message));
+    });
     // Markers and recoloured widgets belong to the conversation that made them.
     connect(m_chatDock, &QtLLM::ChatDockWidget::clearContextRequested,
             m_appInterface, &QtLLM::AppInterface::clearGuidance);
@@ -667,6 +815,51 @@ void ChatWindow::registerTools()
     connect(m_appInterface, &QtLLM::AppInterface::themeChanged, this, [this](const QString& name) {
         m_darkThemeAction->setChecked(name == "dark");
     });
+
+    // What the application knows about itself. The assistant looks topics up
+    // when it needs them (app_help_search / app_help_read); they cost nothing
+    // until then. addTopicsFromDirectory() loads a folder of text files.
+    m_knowledge = new QtLLM::AppKnowledge(&m_client, this);
+    m_knowledge->addTopic("themes", "Changing the colour theme",
+        "The application has two themes, 'default' and 'dark'. Switch with the 'Dark theme' "
+        "button in the main toolbar; it is a toggle. The assistant can switch themes too.",
+        {"dark mode", "appearance", "colours"});
+    m_knowledge->addTopic("panels", "Showing and hiding panels",
+        "The toolbar buttons 'Usage Statistics', 'Assistant Demos' and 'Agent Demo' show or "
+        "hide the panel of the same name. A hidden panel comes back with the same button.");
+    m_knowledge->addTopic("playground", "The Playground panel",
+        "A name field, a colour choice, a 'Shout' option and the Greet button, which writes a "
+        "greeting below them. The inventory table can be edited by double-clicking a cell. "
+        "'About...' opens a dialog.");
+    m_knowledge->addTopic("conversations", "Saving and continuing conversations",
+        "The disk button below the chat saves the conversation as a JSON file; the folder "
+        "button next to it continues a saved one. A saved conversation can only be continued "
+        "with the provider it was saved with.");
+
+    // ---- Which tools the assistant has, and who decides -------------------
+    // Everything above is registered; this is the application's policy on it.
+    //
+    // Rarely needed tool groups are deferred: the model finds them on demand
+    // (find_tools / call_tool) instead of carrying their definitions in every
+    // request.
+    for (const char* group : {"Filesystem", "Clipboard", "Automation"})
+        m_client.setToolGroupDeferred(group, true);
+    // Writing files is off, and the user cannot switch it on in Settings > Tools:
+    // the application decides that alone. Everything else is the user's choice.
+    const QString writeFile = QtLLM::BuiltinTools::toolName(QtLLM::BuiltinTool::WriteTextFile);
+    m_client.setToolEnabled(writeFile, false);
+    m_client.setToolUserConfigurable(writeFile, false);
+    // The user's choices from earlier sessions (locked tools are skipped).
+    m_client.applyUserToolSettings(
+        QJsonDocument::fromJson(QSettings().value(kToolsKey).toByteArray()).object());
+
+    // A safety net for the demo: stop sending once a conversation has cost this much.
+    m_client.setCostLimitUsd(2.0);
+
+    // The chat assistant can list the agents that accept messages and write
+    // to them (list_agents / message_agent) - here: the writer and the critic
+    // of the Agent Demo panel, once they have been started.
+    QtLLM::registerAgentMessagingTools(&m_client);
 
     // run_subagent: the assistant hands side tasks to background agents that
     // run on the chat's provider and have the chat's tools (all registered
@@ -701,6 +894,10 @@ void ChatWindow::connectSignals()
 {
     m_chatDock->setClient(&m_client);
     m_chatDock->setShowToolCalls(QSettings().value(kShowToolCallsKey, false).toBool());
+    // Optional chat features, each a switch of its own.
+    m_chatDock->setImageInputEnabled(true);    // paste, drop or attach pictures
+    m_chatDock->setRegenerateEnabled(true);    // regenerate / edit the last message
+    m_chatDock->setLoadButtonVisible(true);    // continue a saved conversation
 
     // The client silently replaces a model the endpoint does not offer. Without
     // tracking that, m_currentModel keeps a dead model id and hands it to every
@@ -768,6 +965,8 @@ void ChatWindow::openSettings()
     dlg.setOllamaUrl(m_savedOllamaUrl);
     dlg.setFoundryApiKey(m_savedFoundryApiKey);
     dlg.setFoundryEndpointUrl(m_savedFoundryUrl);
+    dlg.setOpenAiUrl(m_savedOpenAiUrl);
+    dlg.setOpenAiApiKey(m_savedOpenAiKey);
     dlg.setProvider(m_settingsProvider);
     dlg.setModel(m_currentModel);   // setProvider() reset the model field
     dlg.setFontSizePercent(m_fontSizePercent);
@@ -795,6 +994,9 @@ void ChatWindow::openSettings()
         m_chatDock->setShowToolCalls(dlg.showToolCalls());
         QSettings().setValue(kShowToolCallsKey, dlg.showToolCalls());
         QSettings().setValue(kModelKey, m_currentModel);
+        // The Tools tab has been applied to the client by now; remember it.
+        QSettings().setValue(kToolsKey,
+            QJsonDocument(m_client.userToolSettings()).toJson(QJsonDocument::Compact));
 
         // Persist both providers' fields in RAM regardless of which is
         // active, so switching back later restores exactly what was
@@ -804,6 +1006,8 @@ void ChatWindow::openSettings()
         m_savedOllamaUrl         = dlg.ollamaUrl();
         m_savedFoundryApiKey     = dlg.foundryApiKey();
         m_savedFoundryUrl        = dlg.foundryEndpointUrl();
+        m_savedOpenAiUrl         = dlg.openAiUrl();
+        m_savedOpenAiKey         = dlg.openAiApiKey();
         m_settingsProvider       = dlg.provider();
 
         // Kept for the agent demo, which spawns with the chat's credentials.
@@ -816,6 +1020,8 @@ void ChatWindow::openSettings()
             m_endpointUrl = m_savedClaudeEndpointUrl; m_apiKey = m_savedClaudeApiKey;   break;
         case QtLLM::SettingsDialog::Provider::ClaudeSubscription:
             m_endpointUrl.clear();                    m_apiKey.clear();                 break;
+        case QtLLM::SettingsDialog::Provider::OpenAICompatible:
+            m_endpointUrl = m_savedOpenAiUrl;         m_apiKey = m_savedOpenAiKey;      break;
         }
 
         // One call covers provider switch, credentials, model and system

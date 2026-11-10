@@ -4,12 +4,19 @@
 #include "Tool.h"
 #include "ToolResult.h"
 #include <QDateTime>
+#include <QJsonArray>
+#include <QMultiHash>
+#include <QSet>
+#include <QJsonDocument>
 #include <QPointer>
 #include <QStringList>
 
 namespace QtLLM {
 
 namespace {
+
+const char* const kListAgents   = "list_agents";
+const char* const kMessageAgent = "message_agent";
 
 // Tools that can only complete by putting something in front of the user.
 // A background agent has no chat and no window, so a dialog raised on its
@@ -28,6 +35,20 @@ bool requiresUserInterface(const QString& toolName)
     return uiTools.contains(toolName);
 }
 
+QString recordedJson(const QJsonObject& object)
+{
+    const QString text = QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    if (text.size() <= Agent::kMaxRecordedJsonChars)
+        return text;
+    return text.left(Agent::kMaxRecordedJsonChars) + QStringLiteral("... (%1 chars)").arg(text.size());
+}
+
+int nextRecordId()
+{
+    static int counter = 0;
+    return ++counter;
+}
+
 } // namespace
 
 
@@ -35,9 +56,12 @@ QString Agent::resolveUrl(const AgentConfig& config)
 {
     if (!config.url.isEmpty())
         return config.url;
-    return config.provider == Provider::Ollama
-        ? QStringLiteral("http://localhost:11434/api/chat")
-        : QStringLiteral("https://api.anthropic.com/v1/messages");
+    switch (config.provider) {
+    case Provider::Ollama: return QStringLiteral("http://localhost:11434/api/chat");
+    case Provider::OpenAI: return QStringLiteral("http://localhost:1234/v1");
+    default:               break;
+    }
+    return QStringLiteral("https://api.anthropic.com/v1/messages");
 }
 
 QString Agent::generateName()
@@ -56,6 +80,12 @@ Agent::Agent(const AgentConfig& config, QObject* parent)
         m_config.name = generateName();
     m_config.url = resolveUrl(config);
     m_spawnedAtMs = QDateTime::currentMSecsSinceEpoch();
+
+    m_record.id           = nextRecordId();
+    m_record.name         = m_config.name;
+    m_record.provider     = m_config.provider;
+    m_record.systemPrompt = m_config.systemPrompt;
+    m_record.spawnedAtMs  = m_spawnedAtMs;
 
     setUsageAppTag(QStringLiteral("agent:") + m_config.name);
 
@@ -83,12 +113,22 @@ Agent::Agent(const AgentConfig& config, QObject* parent)
     connect(this, &Client::errorOccurred,   this, &Agent::onErrorOccurred);
     connect(this, &Client::statsUpdated,    this, &Agent::onStatsUpdated);
     connect(this, &Client::modelsAvailable, this, &Agent::onModelsAvailable);
+    connect(this, &Client::toolInvoked,     this, &Agent::onToolInvoked);
+    connect(this, &Client::toolCompleted,   this, &Agent::onToolCompleted);
+    connect(this, &Client::modelChanged,    this, [this](const QString& name) { m_record.model = name; });
+    m_record.model = model();
 
     AgentRegistry::instance().add(this);
+
+    if (m_config.messaging)
+        registerAgentMessagingTools(this);
 }
 
 Agent::~Agent()
 {
+    // Destroyed mid-turn: the task never got an answer.
+    closeTask(QStringLiteral("agent destroyed before the task finished"), false);
+    m_record.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     AgentRegistry::instance().remove(this);
     // Pending callbacks are dropped, not invoked: the caller is destroying the
     // agent, so it is not waiting for answers any more, and the objects those
@@ -139,6 +179,14 @@ void Agent::dispatchNext()
     m_current    = m_queue.dequeue();
     m_hasCurrent = true;
     m_lastPrompt = m_current.prompt;
+
+    AgentTask task;
+    task.prompt      = m_current.prompt;
+    task.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_record.tasks.append(task);
+    while (m_record.tasks.size() > kMaxRecordedTasks)
+        m_record.tasks.removeFirst();
+
     setState(State::Busy);
     sendPrompt(m_current.prompt);
 }
@@ -160,6 +208,62 @@ void Agent::finishCurrent(const QString& text, bool ok)
 }
 
 
+AgentTask* Agent::openTask()
+{
+    if (m_record.tasks.isEmpty() || m_record.tasks.last().finished)
+        return nullptr;
+    return &m_record.tasks.last();
+}
+
+
+void Agent::closeTask(const QString& text, bool ok)
+{
+    AgentTask* task = openTask();
+    if (!task)
+        return;
+    task->reply      = text;
+    task->ok         = ok;
+    task->finished   = true;
+    task->durationMs = QDateTime::currentMSecsSinceEpoch() - task->startedAtMs;
+    ++m_record.turns;
+    m_record.workingMs += task->durationMs;
+    // Errors come without stats; only an answered turn reports its usage.
+    m_awaitingStats = ok;
+}
+
+
+void Agent::onToolInvoked(const QString& toolName, const QJsonObject& input)
+{
+    AgentTask* task = openTask();
+    if (!task)
+        return;
+    AgentToolCall call;
+    call.name        = toolName;
+    call.input       = recordedJson(input);
+    call.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    task->toolCalls.append(call);
+    ++m_record.toolCalls;
+}
+
+
+void Agent::onToolCompleted(const QString& toolName, const QJsonObject& result)
+{
+    AgentTask* task = openTask();
+    if (!task)
+        return;
+    // ponytail: matched by name, first unanswered call wins. Parallel calls of
+    // the same tool that finish out of order swap results; match by tool-use id
+    // if Client ever reports it.
+    for (AgentToolCall& call : task->toolCalls) {
+        if (call.name == toolName && call.result.isEmpty()) {
+            call.result     = recordedJson(result);
+            call.durationMs = QDateTime::currentMSecsSinceEpoch() - call.startedAtMs;
+            return;
+        }
+    }
+}
+
+
 void Agent::drainQueue(const QString& reason)
 {
     while (!m_queue.isEmpty()) {
@@ -175,6 +279,7 @@ void Agent::setState(State state)
     if (m_state == state)
         return;
     m_state = state;
+    m_record.state = state;
     emit stateChanged(m_state);
 }
 
@@ -183,6 +288,7 @@ void Agent::onResponseReady(const QString& text)
 {
     m_lastReply = text;
     ++m_completedTurns;
+    closeTask(text, true);
     finishCurrent(text, true);
     dispatchNext();
     if (!m_hasCurrent && m_state != State::BudgetExceeded)
@@ -193,6 +299,7 @@ void Agent::onResponseReady(const QString& text)
 void Agent::onErrorOccurred(const QString& message)
 {
     m_lastError = message;
+    closeTask(message, false);
     // A failed turn reports failure to its own caller only. The rest of the
     // queue is unrelated work and a transient network fault should not discard
     // it, so the next entry is dispatched as usual.
@@ -229,7 +336,25 @@ void Agent::onModelsAvailable(const QStringList& models)
 
 void Agent::onStatsUpdated(const UsageStats& stats)
 {
+    // A cleared conversation restarts the session total at zero.
+    const double turnCost = stats.sessionCostUsd >= m_spentUsd ? stats.sessionCostUsd - m_spentUsd
+                                                               : stats.sessionCostUsd;
     m_spentUsd = stats.sessionCostUsd;
+    m_record.inputTokens  += stats.inputTokens;
+    m_record.outputTokens += stats.outputTokens;
+    m_record.costUsd      += turnCost;
+    if (m_awaitingStats) {
+        m_awaitingStats = false;
+        for (int i = m_record.tasks.size() - 1; i >= 0; --i) {
+            AgentTask& task = m_record.tasks[i];
+            if (task.finished) {
+                task.inputTokens  = stats.inputTokens;
+                task.outputTokens = stats.outputTokens;
+                task.costUsd      = turnCost;
+                break;
+            }
+        }
+    }
 
     if (m_config.costCapUsd <= 0.0 || m_spentUsd < m_config.costCapUsd)
         return;
@@ -243,6 +368,165 @@ void Agent::onStatsUpdated(const UsageStats& stats)
     drainQueue(QStringLiteral("agent budget exhausted"));
 }
 
+
+// ------------------------------------------------------------ agents talking to each other
+
+namespace {
+
+// Who is waiting for whose answer right now. An agent can wait for several
+// (parallel message_agent calls), hence the multi hash.
+QMultiHash<const Client*, const Client*>& waitingFor()
+{
+    static QMultiHash<const Client*, const Client*> edges;
+    return edges;
+}
+
+// True when `from` is waiting - directly or through others - for `target`.
+bool isWaitingFor(const Client* from, const Client* target, QSet<const Client*>& seen)
+{
+    if (from == target)
+        return true;
+    if (seen.contains(from))
+        return false;
+    seen.insert(from);
+    const QList<const Client*> next = waitingFor().values(from);
+    for (const Client* other : next) {
+        if (isWaitingFor(other, target, seen))
+            return true;
+    }
+    return false;
+}
+
+QString senderName(const Client* client)
+{
+    const auto* agent = qobject_cast<const Agent*>(client);
+    return agent ? agent->config().name : QString();
+}
+
+QList<Agent*> reachableAgents(const Client* except)
+{
+    QList<Agent*> agents;
+    for (Agent* agent : AgentRegistry::instance().agents()) {
+        if (agent != except && agent->config().messaging)
+            agents.append(agent);
+    }
+    return agents;
+}
+
+QString stateText(Agent::State state)
+{
+    switch (state) {
+    case Agent::State::Idle:           return QStringLiteral("idle");
+    case Agent::State::Starting:       return QStringLiteral("starting");
+    case Agent::State::Busy:           return QStringLiteral("busy");
+    case Agent::State::Error:          return QStringLiteral("idle (last task failed)");
+    case Agent::State::BudgetExceeded: return QStringLiteral("budget exhausted");
+    }
+    return QString();
+}
+
+} // namespace
+
+void registerAgentMessagingTools(Client* client)
+{
+    if (!client)
+        return;
+    QPointer<Client> self(client);
+    // A sender that goes away is not waiting for anyone any more.
+    QObject::connect(client, &QObject::destroyed, [client]() { waitingFor().remove(client); });
+
+    Tool list;
+    list.setName(kListAgents)
+        .setTitle("List agents")
+        .setGroup("Agents")
+        .setStatusText("Looking up the agents...")
+        .setReadOnly(true)
+        .setDescription("List the other agents that are running and can be written to: name, "
+                        "what each is for, and whether it is busy. Use it before message_agent.");
+    client->registerTool(list, [self](const QJsonObject&) {
+        QJsonArray agents;
+        for (Agent* agent : reachableAgents(self)) {
+            QJsonObject entry{{"name", agent->config().name}, {"state", stateText(agent->state())}};
+            if (!agent->config().description.isEmpty())
+                entry["description"] = agent->config().description;
+            if (agent->queuedPrompts() > 0)
+                entry["queued"] = agent->queuedPrompts();
+            agents.append(entry);
+        }
+        QJsonObject result{{"agents", agents}};
+        const QString own = senderName(self);
+        if (!own.isEmpty())
+            result["you"] = own;
+        return toolOk(result);
+    });
+
+    Tool message;
+    message.setName(kMessageAgent)
+        .setTitle("Message agent")
+        .setGroup("Agents")
+        .setStatusText("Waiting for another agent...")
+        .setDescription(
+            "Send a message to another running agent and get its answer back. The agent keeps "
+            "its own conversation, so it remembers earlier messages, but it sees nothing of "
+            "yours: write what it needs to know. It works through its messages in order; a "
+            "busy agent answers later. Do not message an agent to answer a message it sent "
+            "you - your reply is the answer. Names come from list_agents.")
+        .addParameter("to", "string", "Name of the agent, as list_agents reports it.", true)
+        .addParameter("message", "string", "What you want from it, with the context it needs.", true);
+    client->registerAsyncTool(message, [self](const QJsonObject& input, ToolCompletion done) {
+        if (!self)
+            return;
+        const QString to = input.value("to").toString().trimmed();
+        QList<Agent*> matches;
+        QStringList names;
+        for (Agent* agent : reachableAgents(self)) {
+            names.append(agent->config().name);
+            if (agent->config().name.compare(to, Qt::CaseInsensitive) == 0)
+                matches.append(agent);
+        }
+        if (matches.size() != 1) {
+            done.finish(toolError(
+                (matches.isEmpty() ? QStringLiteral("no agent '%1' accepts messages")
+                                   : QStringLiteral("several agents are called '%1'")).arg(to),
+                {{"agents", QJsonArray::fromStringList(names)}}));
+            return;
+        }
+        Agent* target = matches.first();
+
+        // The target would queue this message behind the turn in which it is
+        // waiting for us: both would wait until the tool times out.
+        QSet<const Client*> seen;
+        if (isWaitingFor(target, self, seen)) {
+            done.finish(toolError(QStringLiteral(
+                "'%1' is waiting for your reply to its own message and cannot take a new one "
+                "until then. Answer it by finishing your reply.").arg(target->config().name)));
+            return;
+        }
+
+        const Client* sender = self.data();
+        const QString own = senderName(sender);
+        const QString text = (own.isEmpty() ? QStringLiteral("[Message from the main assistant]\n")
+                                            : QStringLiteral("[Message from agent '%1']\n").arg(own))
+                           + input.value("message").toString();
+
+        waitingFor().insert(sender, target);
+        auto settle = [sender, target]() { waitingFor().remove(sender, target); };
+        // An agent that is deleted drops its callbacks; without this the
+        // sender would wait for the tool's timeout.
+        const QMetaObject::Connection gone = QObject::connect(target, &QObject::destroyed, self.data(),
+            [done, settle]() {
+                settle();
+                done.finish(toolError(QStringLiteral("the agent was closed before it answered")));
+            });
+        const QString targetName = target->config().name;
+        target->ask(text, [done, settle, gone, targetName](const QString& reply, bool ok) {
+            QObject::disconnect(gone);
+            settle();
+            done.finish(ok ? toolOk({{"from", targetName}, {"reply", reply}})
+                           : toolError(QStringLiteral("'%1' could not answer: %2").arg(targetName, reply)));
+        });
+    });
+}
 
 void registerSubagentTool(Client* client,
                           std::function<AgentConfig()> configProvider,
@@ -286,7 +570,10 @@ void registerSubagentTool(Client* client,
             config.name = name;
         auto* agent = new Agent(config, owner);
         if (shareTools) {
-            QStringList except{toolName};
+            // Not the messaging tools either: their handlers speak in the
+            // owner's name. An agent gets its own through AgentConfig::messaging.
+            QStringList except{toolName, QString::fromLatin1(kListAgents),
+                               QString::fromLatin1(kMessageAgent)};
             for (const QString& offered : owner->toolNames()) {
                 if (requiresUserInterface(offered))
                     except.append(offered);

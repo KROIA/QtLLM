@@ -1,6 +1,8 @@
 #include "AppInterface.h"
 #include "ChatDockWidget.h"
 #include "Client.h"
+#include "GuideOverlay.h"
+#include "SpeechBubble.h"
 #include "Tool.h"
 #include "ToolResult.h"
 
@@ -10,6 +12,7 @@
 #include <QAbstractSlider>
 #include <QAbstractSpinBox>
 #include <QAction>
+#include <QApplication>
 #include <QBoxLayout>
 #include <QColor>
 #include <QComboBox>
@@ -69,6 +72,10 @@ const int kMaxListItems   = 200;
 const int kMaxFindResults = 50;
 const int kMaxMarkers     = 150;
 const int kTreeTextChars  = 80;
+const int kMaxActionLog   = 500;
+// Dynamic property holding the id segment of a window found by window
+// discovery, so the id stays the same while the window lives.
+const char* const kWindowIdProperty = "qtllm_windowId";
 const int kDetailTextChars = 2000;
 
 QString redacted() { return QStringLiteral("[redacted]"); }
@@ -297,7 +304,20 @@ const char* const kIdHelp =
 namespace
 {
 
-const int kLastCapabilityBit = 14;   // Capability::Themes
+const int kLastCapabilityBit = 19;   // Capability::WaitForUi
+
+using Capability = AppInterface::Capability;
+
+bool isInputCapability(Capability capability)
+{
+    return capability == Capability::SimulateInput || capability == Capability::WaitForUi;
+}
+
+bool isItemCapability(Capability capability)
+{
+    return capability == Capability::ReadItems || capability == Capability::SelectItems
+        || capability == Capability::EditItems;
+}
 
 // Highlights ... Tours share tools, so they are registered as a set
 // (syncGuidanceTools) instead of one capability at a time.
@@ -319,6 +339,12 @@ AppInterface::AppInterface(Client* client, QWidget* rootWindow, QObject* parent)
                  QStringLiteral("enabled"), QStringLiteral("visible"), QStringLiteral("toolTip")}
 {
     addRoot(rootWindow);
+    if (client) {
+        connect(client, &Client::toolInvoked, this, &AppInterface::onToolInvoked);
+        connect(client, &Client::toolCompleted, this, &AppInterface::onToolCompleted);
+        // A cancelled turn never completes its calls; nothing is pending after a turn.
+        connect(client, &Client::requestFinished, this, [this]() { m_pendingActions.clear(); });
+    }
 }
 
 AppInterface::~AppInterface()
@@ -333,6 +359,8 @@ AppInterface::~AppInterface()
             unregisterCapability(capability);
     }
     syncGuidanceTools();
+    syncInputTools();
+    syncItemTools();
 }
 
 void AppInterface::setCapabilityEnabled(Capability capability, bool enabled)
@@ -342,6 +370,10 @@ void AppInterface::setCapabilityEnabled(Capability capability, bool enabled)
     m_capabilities.setFlag(capability, enabled);
     if (isGuidanceCapability(capability))
         syncGuidanceTools();
+    else if (isInputCapability(capability))
+        syncInputTools();
+    else if (isItemCapability(capability))
+        syncItemTools();
     else if (enabled)
         registerCapability(capability);
     else
@@ -373,6 +405,11 @@ void AppInterface::excludeWidget(QWidget* widget)
         m_excluded.append(widget);
 }
 
+void AppInterface::setWindowDiscoveryEnabled(bool enabled)
+{
+    m_windowDiscovery = enabled;
+}
+
 void AppInterface::setWritableProperties(const QStringList& names)
 {
     m_writable = names;
@@ -387,6 +424,59 @@ void AppInterface::resetLayoutChanges()
         m_layoutUndo.takeLast()();
 }
 
+void AppInterface::resetPropertyChanges()
+{
+    while (!m_propertyUndo.isEmpty())
+        m_propertyUndo.takeLast()();
+}
+
+void AppInterface::clearActionLog()
+{
+    m_actionLog.clear();
+}
+
+void AppInterface::onToolInvoked(const QString& name, const QJsonObject& input)
+{
+    if (!m_client || !name.startsWith(QLatin1String("ui_")))
+        return;
+    for (const Tool& tool : m_client->registeredTools()) {
+        if (tool.name() == name) {
+            if (tool.isReadOnly())
+                return;
+            // The log is shown to people: what went into a password field
+            // does not belong in it.
+            QJsonObject logged = input;
+            if (isPassword(widgetForId(input.value("id").toString()))) {
+                for (const char* key : {"text", "value"}) {
+                    if (logged.contains(QLatin1String(key)))
+                        logged[QLatin1String(key)] = redacted();
+                }
+            }
+            m_pendingActions.append(qMakePair(name, logged));
+            return;
+        }
+    }
+}
+
+void AppInterface::onToolCompleted(const QString& name, const QJsonObject& result)
+{
+    for (int i = 0; i < m_pendingActions.size(); ++i) {
+        if (m_pendingActions[i].first != name)
+            continue;
+        ActionRecord record;
+        record.time = QDateTime::currentDateTime();
+        record.tool = name;
+        record.input = m_pendingActions.takeAt(i).second;
+        record.ok = result.value("status").toString() != QLatin1String("error");
+        record.message = result.value("message").toString();
+        m_actionLog.append(record);
+        if (m_actionLog.size() > kMaxActionLog)
+            m_actionLog.removeFirst();
+        emit actionPerformed(record);
+        return;
+    }
+}
+
 Client* AppInterface::client() const
 {
     return m_client;
@@ -399,7 +489,30 @@ QList<QWidget*> AppInterface::roots() const
         if (root && !result.contains(root.data()))
             result.append(root.data());
     }
+    if (m_windowDiscovery) {
+        for (QWidget* window : QApplication::topLevelWidgets()) {
+            if (isDiscoverableWindow(window) && !result.contains(window))
+                result.append(window);
+        }
+    }
     return result;
+}
+
+bool AppInterface::isDiscoverableWindow(QWidget* widget) const
+{
+    if (!m_windowDiscovery || !widget->isWindow() || !widget->isVisible())
+        return false;
+    switch (widget->windowType()) {
+    case Qt::Popup:
+    case Qt::ToolTip:
+    case Qt::SplashScreen:
+        return false;
+    default:
+        break;
+    }
+    if (qobject_cast<GuideOverlay*>(widget) || qobject_cast<SpeechBubble*>(widget))
+        return false;
+    return !isExcluded(widget);
 }
 
 // ---------------------------------------------------------------- tool registration
@@ -487,6 +600,18 @@ QList<AppInterface::ToolEntry> AppInterface::toolsFor(Capability capability)
                 "[x,y,w,h]. Password fields report their text as [redacted]. " + idHelp)
             .addParameter("id", "string", "Widget id.", true);
         add(details, true, [this](const QJsonObject& args) { return getWidget(args); });
+
+        Tool windows;
+        windows.setName("ui_list_windows")
+            .setTitle("List windows")
+            .setStatusText("Listing the application windows…")
+            .setDescription(
+                "List the application windows you can see: id (the first step of every widget id "
+                "inside it), title, class, modal, active; 'visible': false for a hidden one. Call "
+                "it after an action that may have opened a dialog. A modal window blocks all other "
+                "windows until it is closed: deal with it (answer, cancel) before you go on in "
+                "another window.");
+        add(windows, true, [this](const QJsonObject& args) { return listWindows(args); });
         break;
     }
     case Capability::ReadProperties: {
@@ -522,6 +647,15 @@ QList<AppInterface::ToolEntry> AppInterface::toolsFor(Capability capability)
                                           "New value: string, number or boolean as the property needs."}},
                              true);
         add(tool, false, [this](const QJsonObject& args) { return setWidgetProperty(args); });
+
+        Tool undo;
+        undo.setName("ui_undo_property_change")
+            .setTitle("Undo property change")
+            .setStatusText("Undoing a widget change…")
+            .setDescription("Revert the most recent ui_set_property change, putting the old value "
+                            "back. Call it repeatedly to go further back. Returns how many earlier "
+                            "changes remain undoable.");
+        add(undo, false, [this](const QJsonObject& args) { return undoPropertyChange(args); });
         break;
     }
     case Capability::ReadLayouts: {
@@ -693,6 +827,42 @@ bool AppInterface::isExcluded(QWidget* widget) const
     return false;
 }
 
+QString AppInterface::segmentFor(QWidget* widget) const
+{
+    QList<QWidget*> explicitRoots;
+    for (const QPointer<QWidget>& root : m_roots) {
+        if (root && !explicitRoots.contains(root.data()))
+            explicitRoots.append(root.data());
+    }
+    if (explicitRoots.contains(widget))
+        return segmentFrom(widget, explicitRoots);
+    const QVariant stored = widget->property(kWindowIdProperty);
+    if (stored.isValid())
+        return stored.toString();
+
+    // A discovered window keeps its id while it lives, so an unnamed one gets
+    // a serial (@n) instead of a position that shifts when another window closes.
+    static int serial = 0;
+    QString segment = cleanName(widget);
+    bool taken = segment.isEmpty();
+    for (QWidget* other : roots()) {
+        if (taken)
+            break;
+        if (other == widget)
+            continue;
+        const QString otherSegment = explicitRoots.contains(other)
+            ? segmentFrom(other, explicitRoots) : other->property(kWindowIdProperty).toString();
+        taken = otherSegment == segment;
+    }
+    if (taken) {
+        const QString base = segment.isEmpty()
+            ? QString::fromLatin1(widget->metaObject()->className()) : segment;
+        segment = base + QLatin1Char('@') + QString::number(++serial);
+    }
+    widget->setProperty(kWindowIdProperty, segment);
+    return segment;
+}
+
 QString AppInterface::idForWidget(QWidget* widget) const
 {
     if (!widget || isExcluded(widget))
@@ -701,7 +871,7 @@ QString AppInterface::idForWidget(QWidget* widget) const
     QStringList steps;
     for (QWidget* current = widget; current; current = current->parentWidget()) {
         if (rootList.contains(current)) {
-            steps.prepend(segmentFrom(current, rootList));
+            steps.prepend(segmentFor(current));
             const QString id = steps.join(QLatin1Char('/'));
             m_ids.insert(id, widget);
             return id;
@@ -722,7 +892,7 @@ QWidget* AppInterface::widgetForId(const QString& id) const
     const QList<QWidget*> rootList = roots();
     QWidget* found = nullptr;
     for (QWidget* root : rootList) {
-        if (segmentFrom(root, rootList) == steps.first()) {
+        if (segmentFor(root) == steps.first()) {
             found = root;
             break;
         }
@@ -891,7 +1061,9 @@ QJsonObject AppInterface::treeNode(QWidget* widget, const QString& id, int depth
     const QList<QWidget*> all = childWidgets(widget);
     QList<QWidget*> shown;
     for (QWidget* child : all) {
-        if (!excludedItself(child) && (!visibleOnly || child->isVisible()))
+        // A discovered window is a root of its own, not a child of its parent's tree.
+        if (!excludedItself(child) && (!visibleOnly || child->isVisible())
+            && !isDiscoverableWindow(child))
             shown.append(child);
     }
     if (shown.isEmpty())
@@ -932,7 +1104,7 @@ QJsonObject AppInterface::getWidgetTree(const QJsonObject& args)
         for (QWidget* root : rootList) {
             if (isExcluded(root) || (visibleOnly && !root->isVisible()) || budget <= 0)
                 continue;
-            tree.append(treeNode(root, segmentFrom(root, rootList), depth, visibleOnly, budget));
+            tree.append(treeNode(root, segmentFor(root), depth, visibleOnly, budget));
         }
     }
     QJsonObject result{{"tree", tree}};
@@ -952,12 +1124,9 @@ QJsonObject AppInterface::findWidgets(const QJsonObject& args)
 
     QJsonArray matches;
     bool truncated = false;
-    std::function<void(QWidget*, const QString&, const QList<QWidget*>&)> walk =
-        [&](QWidget* widget, const QString& parentId, const QList<QWidget*>& siblings) {
-        if (truncated || excludedItself(widget))
+    std::function<void(QWidget*, const QString&)> walk = [&](QWidget* widget, const QString& id) {
+        if (truncated)
             return;
-        const QString segment = segmentFrom(widget, siblings);
-        const QString id = parentId.isEmpty() ? segment : parentId + QLatin1Char('/') + segment;
         const QString widgetLabel = widgetText(widget);
         const QString widgetClass = QString::fromLatin1(widget->metaObject()->className());
         const bool match =
@@ -982,19 +1151,40 @@ QJsonObject AppInterface::findWidgets(const QJsonObject& args)
             matches.append(item);
         }
         const QList<QWidget*> children = childWidgets(widget);
-        for (QWidget* child : children)
-            walk(child, id, children);
+        for (QWidget* child : children) {
+            if (!excludedItself(child) && !isDiscoverableWindow(child))
+                walk(child, id + QLatin1Char('/') + segmentFrom(child, children));
+        }
     };
-    const QList<QWidget*> rootList = roots();
-    for (QWidget* root : rootList) {
+    for (QWidget* root : roots()) {
         if (!isExcluded(root))
-            walk(root, QString(), rootList);
+            walk(root, segmentFor(root));
     }
 
     QJsonObject result{{"widgets", matches}};
     if (truncated)
         result["truncated"] = true;
     return toolOk(result);
+}
+
+QJsonObject AppInterface::listWindows(const QJsonObject&)
+{
+    QJsonArray list;
+    for (QWidget* root : roots()) {
+        if (isExcluded(root))
+            continue;
+        const QString id = segmentFor(root);
+        m_ids.insert(id, root);
+        QJsonObject item{{"id", id},
+                         {"title", root->windowTitle()},
+                         {"class", QString::fromLatin1(root->metaObject()->className())},
+                         {"modal", root->isModal()},
+                         {"active", root->isActiveWindow()}};
+        if (!root->isVisible())
+            item["visible"] = false;
+        list.append(item);
+    }
+    return toolOk({{"windows", list}});
 }
 
 QJsonObject AppInterface::getWidget(const QJsonObject& args)
@@ -1176,13 +1366,33 @@ QJsonObject AppInterface::setWidgetProperty(const QJsonObject& args)
             return toolError(QStringLiteral("cannot convert the value to %1")
                                  .arg(QString::fromLatin1(property.typeName())));
     }
+    const QVariant old = property.read(widget);
     if (!property.write(widget, value))
         return toolError(QStringLiteral("the widget rejected the value for '%1'").arg(name));
+    QPointer<QWidget> guard(widget);
+    const QByteArray propertyName = name.toLatin1();
+    m_propertyUndo.append([guard, propertyName, old]() {
+        if (!guard)
+            return false;
+        guard->setProperty(propertyName.constData(), old);
+        return true;
+    });
 
     const QJsonValue now = isPassword(widget) && isSecretProperty(name)
         ? QJsonValue(redacted())
         : propertyToJson(property, property.read(widget));
     return toolOk({{"id", id}, {"name", name}, {"value", now}});
+}
+
+QJsonObject AppInterface::undoPropertyChange(const QJsonObject&)
+{
+    if (m_propertyUndo.isEmpty())
+        return toolError(QStringLiteral("there is no property change to undo"));
+    if (!m_propertyUndo.takeLast()())
+        return toolError(QStringLiteral("the widget of the last property change no longer exists; "
+                                        "nothing was reverted"),
+                         {{"undoSteps", m_propertyUndo.size()}});
+    return toolOk({{"undoSteps", m_propertyUndo.size()}});
 }
 
 // ---------------------------------------------------------------- layouts

@@ -150,6 +150,22 @@ Token counts are populated from Ollama's `prompt_eval_count` and `eval_count` re
 
 ---
 
+## OpenAI-compatible servers
+
+`Provider::OpenAI` speaks the OpenAI Chat Completions API, which most local servers offer: LM Studio (`http://localhost:1234/v1`), llama.cpp server, vLLM, Ollama (`http://localhost:11434/v1`), and hosted services.
+
+```cpp
+QtLLM::Client client(QtLLM::Provider::OpenAI, "http://localhost:1234/v1");   // key optional
+```
+
+- The url may be the base or the full `.../chat/completions`; a bare host gets `/v1`.
+- Models come from `GET <base>/models`; a model the server does not list is replaced by one it does.
+- Streaming, tools (also asynchronous), pictures in prompts and in tool results, `setParallelToolCalls(false)`, effort as `reasoning_effort`.
+- An optional request field the server rejects (`stream_options`, `reasoning_effort`, `parallel_tool_calls`, `max_tokens` vs `max_completion_tokens`) is left out from then on.
+- No tokenizer endpoint: the context bar shows estimates. Cost is 0 for models the price table does not know.
+
+---
+
 ## Switching providers at runtime
 
 ```cpp

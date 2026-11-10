@@ -74,14 +74,32 @@ void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void OllamaProtocol::beginTurn(const QString& userMessage)
 {
-    if (m_turnInProgress) {
-        m_pendingTurns.enqueue(userMessage);
-        return;
-    }
-    startNewTurn(userMessage);
+    beginTurn(userMessage, QJsonArray());
 }
 
-void OllamaProtocol::startNewTurn(const QString& userMessage)
+void OllamaProtocol::beginTurn(const QString& userMessage, const QJsonArray& images)
+{
+    QJsonObject msg;
+    msg["role"]    = "user";
+    msg["content"] = userMessage;
+    if (!images.isEmpty()) {
+        // ponytail: sent to whatever model is selected. One without vision
+        // ignores or rejects the pictures; checking /api/show for the
+        // "vision" capability first is the upgrade.
+        QJsonArray data;
+        for (const QJsonValue& value : images)
+            data.append(value.toObject()["data"]);
+        msg["images"] = data;
+    }
+
+    if (m_turnInProgress) {
+        m_pendingTurns.enqueue(msg);
+        return;
+    }
+    startNewTurn(msg);
+}
+
+void OllamaProtocol::startNewTurn(const QJsonObject& userMessage)
 {
     m_turnInProgress   = true;
     m_turnInputTokens  = 0;
@@ -91,10 +109,7 @@ void OllamaProtocol::startNewTurn(const QString& userMessage)
     m_turnToolIterations = 0;
     m_historyLenBeforeTurn = m_history.size();
 
-    QJsonObject msg;
-    msg["role"]    = "user";
-    msg["content"] = userMessage;
-    m_history.append(msg);
+    m_history.append(userMessage);
     sendRequest();
 }
 

@@ -86,14 +86,39 @@ void ClaudeProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void ClaudeProtocol::beginTurn(const QString& userMessage)
 {
-    if (m_turnInProgress) {
-        m_pendingTurns.enqueue(userMessage);
-        return;
-    }
-    startNewTurn(userMessage);
+    beginTurn(userMessage, QJsonArray());
 }
 
-void ClaudeProtocol::startNewTurn(const QString& userMessage)
+void ClaudeProtocol::beginTurn(const QString& userMessage, const QJsonArray& images)
+{
+    QJsonObject msg;
+    msg["role"] = "user";
+    if (images.isEmpty()) {
+        msg["content"] = userMessage;
+    } else {
+        // Pictures first, the question about them after.
+        QJsonArray content;
+        for (const QJsonValue& value : images) {
+            const QJsonObject image = value.toObject();
+            content.append(QJsonObject{
+                {"type", "image"},
+                {"source", QJsonObject{{"type", "base64"},
+                                       {"media_type", image["media_type"]},
+                                       {"data", image["data"]}}}});
+        }
+        if (!userMessage.isEmpty())
+            content.append(QJsonObject{{"type", "text"}, {"text", userMessage}});
+        msg["content"] = content;
+    }
+
+    if (m_turnInProgress) {
+        m_pendingTurns.enqueue(msg);
+        return;
+    }
+    startNewTurn(msg);
+}
+
+void ClaudeProtocol::startNewTurn(const QJsonObject& userMessage)
 {
     m_turnInProgress              = true;
     m_turnInputTokens             = 0;
@@ -107,10 +132,7 @@ void ClaudeProtocol::startNewTurn(const QString& userMessage)
     m_turnTimerStarted            = false;
     m_historyLenBeforeTurn        = m_history.size();
 
-    QJsonObject msg;
-    msg["role"]    = "user";
-    msg["content"] = userMessage;
-    m_history.append(msg);
+    m_history.append(userMessage);
     sendRequest();
 }
 
@@ -363,6 +385,8 @@ QJsonObject ClaudeProtocol::buildRequestBody() const
         for (const QJsonObject& schema : m_toolSchemas)
             tools.append(schema);
         body["tools"] = tools;
+        if (!m_parallelToolCalls)
+            body["tool_choice"] = QJsonObject{{"type", "auto"}, {"disable_parallel_tool_use", true}};
     }
 
     // System prompt as a cached content-block array (caches tools + system together

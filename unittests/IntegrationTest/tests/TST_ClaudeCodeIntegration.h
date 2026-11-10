@@ -22,6 +22,7 @@ public:
     {
         ADD_TEST(TST_ClaudeCodeIntegration::testToolCallAndResume);
         ADD_TEST(TST_ClaudeCodeIntegration::testSubagentsUseTheChatsTools);
+        ADD_TEST(TST_ClaudeCodeIntegration::testAgentsTalkToEachOther);
     }
 
 private:
@@ -122,6 +123,60 @@ private:
         TEST_COMPARE(codeCalls, 2);
         TEST_ASSERT(answer.contains("KIWI-42"));
         TEST_ASSERT(clock.elapsed() >= 5000);
+    }
+
+    // Two living agents: one knows something, the other has to find out who
+    // that is and ask.
+    TEST_FUNCTION(testAgentsTalkToEachOther)
+    {
+        TEST_START;
+
+        if (!loggedInOrSkip())
+            return;
+
+        auto make = [](const QString& name, const QString& description, const QString& prompt) {
+            QtLLM::AgentConfig config;
+            config.name         = name;
+            config.provider     = QtLLM::Provider::ClaudeCode;
+            config.model        = "haiku";
+            config.messaging    = true;
+            config.description  = description;
+            config.systemPrompt = prompt;
+            return config;
+        };
+        QtLLM::Agent librarian(make("librarian", "Knows the build number of this application.",
+            "You are the librarian. Answer questions with your tools, in one short line."));
+        QtLLM::Agent clerk(make("clerk", "Handles requests from the front desk.",
+            "You are the clerk. You know nothing yourself; other agents may. Answer in one short line."));
+
+        int codeCalls = 0;
+        QtLLM::Tool code;
+        code.setName("get_build_number").setDescription("Returns the build number of this application.");
+        librarian.registerTool(code, [&](const QJsonObject&) {
+            ++codeCalls;
+            return QtLLM::toolOk({{"build_number", "KIWI-42"}});
+        });
+        QStringList clerkCalls;
+        QObject::connect(&clerk, &QtLLM::Client::toolInvoked,
+                         [&](const QString& tool, const QJsonObject&) { clerkCalls.append(tool); });
+
+        QEventLoop loop;
+        QString answer;
+        bool ok = false;
+        QTimer::singleShot(180000, &loop, &QEventLoop::quit);
+        clerk.ask("What is the build number of this application? Find out which agent knows it, "
+                  "ask that agent, and reply with the build number.",
+                  [&](const QString& text, bool success) { answer = text; ok = success; loop.quit(); });
+        loop.exec();
+
+        std::cout << "  Response: " << answer.toStdString() << "\n";
+        std::cout << "  Clerk's tool calls: " << clerkCalls.join(", ").toStdString() << "\n";
+        TEST_ASSERT_M(ok, ("failed: " + answer).toStdString().c_str());
+        TEST_ASSERT(clerkCalls.contains("message_agent"));
+        std::cout << "  Librarian looked the build number up " << codeCalls << " time(s)" << std::endl;
+        TEST_ASSERT(codeCalls >= 1);   // a model may check twice
+        TEST_ASSERT(answer.contains("KIWI-42"));
+        TEST_ASSERT(librarian.record().tasks.value(0).prompt.contains("Message from agent 'clerk'"));
     }
 
     TEST_FUNCTION(testToolCallAndResume)
