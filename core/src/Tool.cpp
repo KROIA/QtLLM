@@ -298,7 +298,7 @@ static int editDistance(const QString& a, const QString& b)
 
 // Closest declared name, or empty when nothing is near enough to be a typo.
 // The distance must stay below the shorter length so "x" never suggests "id".
-static QString closestName(const QString& name, const QStringList& candidates)
+QString Tool::closestName(const QString& name, const QStringList& candidates)
 {
     QString best;
     int bestDistance = 3;
@@ -457,7 +457,7 @@ static bool prepareObject(const QJsonObject& schema, QJsonObject& obj,
                 continue;
             failWith(pass, QString("unknown parameter: %1").arg(joinPath(path, key)), expected);
             pass.error["valid_parameters"] = QJsonArray::fromStringList(properties.keys());
-            const QString suggestion = closestName(key, properties.keys());
+            const QString suggestion = Tool::closestName(key, properties.keys());
             if (!suggestion.isEmpty())
                 pass.error["did_you_mean"] = suggestion;
             return false;

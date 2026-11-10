@@ -19,6 +19,12 @@
 class QCheckBox;
 class QVBoxLayout;
 
+namespace ScriptHost
+{
+class ScriptEngine;
+class ScriptsWidget;
+}
+
 namespace QtLLM
 {
     class Client;
@@ -131,8 +137,19 @@ namespace QtLLM
         // switch at all is decided on the Client: setToolUserConfigurable().
         ToolSettingsWidget* toolSettingsWidget() const { return m_toolSettings; }
 
+        // Bind the application's script engine (a QtLLM::Scripting): the
+        // "Scripts" tab then shows its switches, saved scripts, methods and
+        // runs. The switches are applied with the Tools tab's (Apply) and
+        // dropped on Cancel. The tab is ScriptHost's ScriptsWidget. In a build
+        // without scripting (QTLLM_SCRIPTING=OFF) both do nothing and there is
+        // no tab.
+        void setScripting(ScriptHost::ScriptEngine* scripting);
+        ScriptHost::ScriptsWidget* scriptsWidget() const;
+
         // Hide a tab the application does not want to offer. All visible by default.
-        enum class Tab { Settings, Tools, Statistics, Context, Agents };
+        // Scripts sits after Tools; it is shown only while a Scripting object
+        // is set (setScripting) and scripting is built in.
+        enum class Tab { Settings, Tools, Statistics, Context, Agents, Scripts };
         void setTabVisible(Tab tab, bool visible);
         bool isTabVisible(Tab tab) const;
 
@@ -167,6 +184,7 @@ namespace QtLLM
         void refreshToolsTab();
         void applyToolToggles();
         void refreshContextTab();
+        void updateScriptsTab();
         // Fetches models for whichever provider/credentials are currently
         // typed into this dialog's own fields - independent of whatever
         // provider the app's live Client happens to be bound to, since that
@@ -218,6 +236,12 @@ namespace QtLLM
         QPointer<Client>          m_client;
         QPointer<ProtocolBase>    m_modelFetchProtocol;  // throwaway, see fetchModelsForCurrentProvider()
         ToolSettingsWidget*       m_toolSettings = nullptr;
+        // The ScriptsWidget, or an empty page in a build without scripting.
+        // Typed plainly so that this header is the same in both builds.
+        QWidget*                  m_scriptsPage = nullptr;
+        QPointer<QObject>         m_scripting;
+        bool                      m_scriptsTabWanted = true;    // setTabVisible(Tab::Scripts, ...)
+        QList<QWidget*>           m_tabPages;                   // by Tab
         QFormLayout*              m_formLayout = nullptr;
         QLabel*                   m_modelHintLabel = nullptr;
         QMap<int, ProviderPolicy> m_policies;       // by Provider

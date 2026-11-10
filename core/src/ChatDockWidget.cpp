@@ -38,6 +38,8 @@ namespace QtLLM
     public:
         using QTextEdit::QTextEdit;
         std::function<void()> onSubmit;
+        // Returns true when Esc meant something (an edit was cancelled).
+        std::function<bool()> onEscape;
         // Returns true when it took pictures out of pasted / dropped data.
         std::function<bool(const QMimeData*)> onPictures;
 
@@ -58,6 +60,10 @@ namespace QtLLM
                 !(event->modifiers() & Qt::ShiftModifier)) {
                 if (onSubmit)
                     onSubmit();
+                event->accept();
+                return;
+            }
+            if (event->key() == Qt::Key_Escape && onEscape && onEscape()) {
                 event->accept();
                 return;
             }
@@ -190,8 +196,10 @@ namespace QtLLM
         m_editLastButton = new QPushButton(QString::fromUtf8("\xe2\x9c\x8e"), m_centralWidget);
         m_editLastButton->setFixedWidth(28);
         m_editLastButton->setObjectName("qtllm_editLastButton");
-        m_editLastButton->setToolTip("Edit last message\n\nTakes your last message and its answer out of the "
-                                     "conversation and puts the message back into the input field.");
+        m_editLastButton->setCheckable(true);
+        m_editLastButton->setToolTip("Edit last message\n\nPuts your last message back into the input field. "
+                                     "Sending it replaces the message and its answer.\n"
+                                     "Click again or press Esc to keep them as they are.");
         m_editLastButton->setVisible(false);
         contextRow->addWidget(m_editLastButton);
         connect(m_editLastButton, &QPushButton::clicked, this, &ChatDockWidget::onEditLastClicked);
@@ -219,6 +227,7 @@ namespace QtLLM
         inputField->setMaximumHeight(80);
         inputField->setAcceptRichText(false);
         inputField->onSubmit = [this]() { onSendClicked(); };
+        inputField->onEscape = [this]() { return cancelEditLast(); };
         inputField->onPictures = [this](const QMimeData* data) { return takePictures(data); };
         m_inputField = inputField;
 
@@ -514,6 +523,9 @@ namespace QtLLM
         }
         m_pendingToolCards.clear();
         m_userBubbles.clear();
+        m_editHidden.clear();
+        m_editingLast = false;
+        m_editLastButton->setChecked(false);
     }
 
     void ChatDockWidget::setAssistantName(const QString& name)
@@ -777,6 +789,14 @@ namespace QtLLM
             return false;
         }
 
+        if (m_editingLast) {
+            // The changed message replaces the exchange that was only hidden.
+            m_editingLast = false;
+            m_editHidden.clear();
+            m_editLastButton->setChecked(false);
+            takeLastExchange();
+        }
+
         QString shown = trimmed;
         if (!m_pendingImages.isEmpty()) {
             // Applications send what messageSent() carries and tend to skip
@@ -927,6 +947,7 @@ namespace QtLLM
 
     void ChatDockWidget::onRegenerateClicked()
     {
+        cancelEditLast();
         const QString prompt = takeLastExchange();
         if (!prompt.isEmpty())
             submitPrompt(prompt);
@@ -934,11 +955,58 @@ namespace QtLLM
 
     void ChatDockWidget::onEditLastClicked()
     {
-        const QString prompt = takeLastExchange();
-        if (prompt.isEmpty())
+        if (cancelEditLast())
             return;
+        m_editLastButton->setChecked(false);
+        if (!m_client || m_isLoading)
+            return;
+
+        QString prompt;
+        const QJsonArray history = m_client->conversationHistory();
+        for (int i = history.size() - 1; i >= 0 && prompt.isEmpty(); --i) {
+            if (history[i].toObject()["role"].toString() == QLatin1String("user"))
+                prompt = history[i].toObject()["content"].toString();
+        }
+        while (!m_userBubbles.isEmpty() && !m_userBubbles.last())
+            m_userBubbles.removeLast();
+        const int from = m_userBubbles.isEmpty() ? -1 : m_messagesLayout->indexOf(m_userBubbles.last());
+        if (prompt.isEmpty() || from < 0) {
+            setStatusText("There is no message to take back.");
+            return;
+        }
+
+        // Nothing leaves the conversation yet: the exchange is hidden, and
+        // removed when the changed message is sent (submitPrompt), so that
+        // giving up the edit costs nothing.
+        // ponytail: a message arriving from elsewhere while the edit is open
+        // becomes the "last exchange" that sending then replaces.
+        for (int i = from; i < m_messagesLayout->count() - 1; ++i) {   // the last item is the stretch
+            QWidget* widget = m_messagesLayout->itemAt(i)->widget();
+            if (widget && !widget->isHidden()) {
+                widget->hide();
+                m_editHidden.append(widget);
+            }
+        }
+        m_editingLast = true;
+        m_editLastButton->setChecked(true);
         setInputText(prompt);
         m_inputField->setFocus();
+    }
+
+    bool ChatDockWidget::cancelEditLast()
+    {
+        if (!m_editingLast)
+            return false;
+        m_editingLast = false;
+        m_editLastButton->setChecked(false);
+        for (const QPointer<QWidget>& widget : m_editHidden) {
+            if (widget)
+                widget->show();
+        }
+        m_editHidden.clear();
+        m_inputField->clear();
+        scrollToBottom();
+        return true;
     }
 
     void ChatDockWidget::setLoadButtonVisible(bool visible)

@@ -64,6 +64,24 @@ Outputs land in `installation/bin/` and `installation/lib/`.
 
 ---
 
+## Options
+
+| Option | Default | Effect |
+|---|---|---|
+| `QTLLM_SCRIPTING` | `ON` | Scripting ([Scripting.md](Scripting.md)). Fetches the [ScriptHost](https://github.com/KROIA/ScriptHost) library, which needs the Qt module **Qml**. `OFF` builds without both: there is no `QtLLM::Scripting` and `QTLLM_HAS_SCRIPTING` is 0 |
+
+```bat
+cmake --preset x64-Debug -DQTLLM_SCRIPTING=OFF
+```
+
+The option lives in `dependencies/ScriptHost.cmake`. To build against a local checkout of ScriptHost instead of the repository:
+
+```bat
+cmake --preset x64-Debug -DFETCHCONTENT_SOURCE_DIR_SCRIPTHOST="C:/path/to/ScriptHost"
+```
+
+---
+
 ## Project Targets
 
 | Target | Type | Description |

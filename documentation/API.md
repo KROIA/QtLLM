@@ -506,7 +506,7 @@ Ready-made chat panel (`QDockWidget`): message bubbles with Markdown rendering, 
 | `saveConversationRequested()` | Save clicked and **no** client bound (fallback for custom handling) |
 | `interviewFinished(QJsonObject result)` | An interview card was submitted or skipped |
 
-Optional features, off by default: `setImageInputEnabled(bool)` (paste, drop or attach pictures; `attachImages()` from code; signal `imagesSubmitted()` when no client is bound), `setRegenerateEnabled(bool)` (regenerate / edit the last message), `setLoadButtonVisible(bool)` and `loadConversation(QJsonObject)` (continue a saved conversation).
+Optional features, off by default: `setImageInputEnabled(bool)` (paste, drop or attach pictures; `attachImages()` from code; signal `imagesSubmitted()` when no client is bound), `setRegenerateEnabled(bool)` (regenerate / edit the last message; an edit is given up by clicking the button again or pressing Esc in the input field, and replaces the exchange only when the changed message is sent), `setLoadButtonVisible(bool)` and `loadConversation(QJsonObject)` (continue a saved conversation).
 
 ---
 
@@ -812,6 +812,10 @@ Everything optional is a switch the application sets in code; nothing below is o
 | Tools on demand | `Client::setToolDeferred(name, bool)` / `setToolGroupDeferred(group, bool)` |
 | UI tools | `AppInterface::setCapabilityEnabled(capability, bool)`, one flag per tool family; `setWindowDiscoveryEnabled(bool)` |
 | Application help | `AppKnowledge::setEnabled(bool)` |
+| Scripting (build) | CMake option `QTLLM_SCRIPTING` in `dependencies/ScriptHost.cmake`; `QTLLM_HAS_SCRIPTING` in code |
+| Scripting for the model | `Scripting::setEnabled(bool)`; approval per kind of script with `setApprovalRequired(kind, bool)` or `setApproval(preset)` |
+| Each method a script can call | `Scripting::setMethodEnabled(name, bool)` / `setMethodGroupEnabled(group, bool)`; tools as methods with `exposeTool` |
+| What the user may change about scripting | `Scripting::setEnabledUserConfigurable`, `setApprovalUserConfigurable`, `setMethodUserConfigurable`, `setUserMayEditScripts`, `setDebuggerEnabled` |
 | Subagents | call `registerSubagentTool()` or not; `shareTools` argument |
 | Agents talking to each other | `AgentConfig::messaging` per agent; `registerAgentMessagingTools(client)` for the chat |
 | Built-in tools | the list passed to `BuiltinTools::registerTools()` |
@@ -893,6 +897,42 @@ help->addTopicsFromDirectory(":/help");    // every *.md / *.txt; first line = t
 ```
 
 Registers `app_help_search(query)` and `app_help_read(id, offset)` while there is at least one topic. `setEnabled(false)` withdraws them.
+
+---
+
+## `QtLLM::Scripting`
+
+Lets the model run a JavaScript program inside the application instead of making one tool call per item. The script calls methods the application defines; only what it returns goes back to the model. Full guide: [Scripting.md](Scripting.md).
+
+The engine is the [ScriptHost](https://github.com/KROIA/ScriptHost) library, an optional dependency. `QtLLM::Scripting` derives from `ScriptHost::ScriptEngine` and adds the model's side; `QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget` and `ScriptEditorDialog` are the ScriptHost classes.
+
+```cpp
+auto* scripting = new QtLLM::Scripting(&client, this);
+
+QtLLM::ScriptMethod read("db.readObject");
+read.setDescription("Reads one object.").addParameter("id", "string", "Object id")
+    .setReturns("object", "The object", exampleObject).setReadOnly(true);
+scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
+    return m_db.object(args["id"].toString());      // throw QtLLM::ScriptError to fail the call
+});
+```
+
+| | |
+|---|---|
+| Tools for the model | `run_script(code \| name, args, dry_run)`, `script_api(query)`; with a library `list_scripts`, `read_script`, `save_script` |
+| Methods | `registerMethod`, `registerAsyncMethod`, `unregisterMethod`; `exposeTool` / `exposeToolGroup` / `exposeAllTools` make tools callable as `tools.<name>({...})` |
+| Built in | `log`, `progress`, `sleep`, `pause`, `args`; `llm.ask` / `llm.choose` after `setLlmConfigProvider` |
+| Definition | `apiDefinition(query)`: the enabled methods as TypeScript declarations, for the model and for the editor |
+| Before a script runs | `check(code)`: syntax, and that every method it names exists and is enabled. Errors carry the line |
+| Running | `run(code, options, callback)`, `stop()`, `isRunning()`; `RunOptions::dryRun` records changing calls instead of making them |
+| Limits | `setLimits({timeoutMs, maxCalls, maxLogLines})`, `ScriptMethod::setMaxCallsPerRun`, `setLlmCallLimit` |
+| Approval | `setApprovalRequired(ScriptKind, bool)` per kind (`NewReading`, `NewChanging`, `SavedReading`, `SavedChanging`, `DryRun`), `setApproval(Never \| ChangingScripts \| Always)` for all, `setApprovalHandler` |
+| Debugger | `RunOptions::debug`, `stepRun()`, `continueRun()`, `setBreakpoints()`, signals `runPaused`, `runCallFinished` |
+| Saved scripts | `QtLLM::ScriptLibrary`: `setDirectory`, `addReadOnlyDirectory`, `scripts()`, `save`, `remove` |
+| User interface | `SettingsDialog::setScripting()` adds the Scripts tab (`QtLLM::ScriptsWidget`); `QtLLM::ScriptEditorDialog` is the editor with runner and call stepping |
+| User's choices | `userSettings()` / `applyUserSettings()` |
+
+Built with `QTLLM_SCRIPTING=OFF` none of this exists and `QTLLM_HAS_SCRIPTING` is 0.
 
 ---
 

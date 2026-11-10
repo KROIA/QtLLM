@@ -18,8 +18,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
+#include <QLabel>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QTextEdit>
 #include <QTimer>
 #include <functional>
 
@@ -667,6 +670,7 @@ private:
         WiredChat w;
         w.api.replies.enqueue(FakeApi::textReply("first try"));
         w.api.replies.enqueue(FakeApi::textReply("second try"));
+        w.api.replies.enqueue(FakeApi::textReply("third try"));
 
         // Off until the application asks for it.
         TEST_ASSERT(w.button("qtllm_regenerateButton")->isHidden());
@@ -685,11 +689,48 @@ private:
         TEST_COMPARE(w.client.conversationHistory()[1].toObject()["content"].toString(), QString("second try"));
         TEST_ASSERT(!w.api.messageBodies.value(1).contains("first try"));
 
-        // Edit: the exchange is taken back, the text waits in the input field.
-        w.button("qtllm_editLastButton")->click();
+        // Edit: the text waits in the input field and the exchange is hidden,
+        // but still part of the conversation.
+        auto answerShown = [&]() {
+            for (QLabel* label : w.chat.findChildren<QLabel*>()) {
+                if (label->text().contains("second try"))
+                    return label->isVisibleTo(&w.chat);
+            }
+            return false;
+        };
+        QPushButton* edit = w.button("qtllm_editLastButton");
+        TEST_ASSERT(answerShown());
+        edit->click();
         TEST_COMPARE(w.chat.inputText(), QString("tell me a joke"));
-        TEST_ASSERT(w.client.conversationHistory().isEmpty());
+        TEST_ASSERT(edit->isChecked());
+        TEST_ASSERT(!answerShown());
+        TEST_COMPARE(w.client.conversationHistory().size(), 2);
+
+        // A second click gives the edit up: everything is as before.
+        edit->click();
+        TEST_ASSERT(!edit->isChecked());
+        TEST_ASSERT(answerShown());
+        TEST_ASSERT(w.chat.inputText().isEmpty());
+        TEST_COMPARE(w.client.conversationHistory().size(), 2);
+
+        // So does Esc in the input field.
+        edit->click();
+        TEST_ASSERT(!answerShown());
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(w.chat.findChild<QTextEdit*>("qtllm_chatInput"), &escape);
+        TEST_ASSERT(!edit->isChecked());
+        TEST_ASSERT(answerShown());
+        TEST_COMPARE(w.client.conversationHistory().size(), 2);
         TEST_COMPARE(w.api.messageRequests, 2);
+
+        // Sending the changed message replaces the exchange.
+        edit->click();
+        TEST_ASSERT(w.ask("tell me a riddle"));
+        TEST_ASSERT(!edit->isChecked());
+        TEST_COMPARE(w.client.conversationHistory().size(), 2);
+        TEST_COMPARE(w.client.conversationHistory()[0].toObject()["content"].toString(), QString("tell me a riddle"));
+        TEST_ASSERT(!w.api.messageBodies.value(2).contains("second try"));
+        TEST_ASSERT(!answerShown());
     }
 
     TEST_FUNCTION(testChatPicturesAndLoad)

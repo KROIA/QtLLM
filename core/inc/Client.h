@@ -48,6 +48,17 @@ using ContextWindowResolver = std::function<int(const QString& provider, const Q
 
 class Client;
 
+// How Client::callTool() runs a tool. The defaults are what a call by the
+// model gets; a caller that makes many calls on its own account (a script)
+// switches off what is meant for single calls in a conversation.
+struct ToolCallOptions
+{
+    bool announce    = true;   // emit toolInvoked() / toolCompleted()
+    bool countInTurn = true;   // counts against setMaxToolCallsPerTurn()
+    bool capResult   = true;   // setMaxToolResultChars() applies
+    bool askConsent  = true;   // the consent handler is asked
+};
+
 // Handed to an asynchronous tool handler: how it reports back. Copyable, and
 // usable from any thread - the result is delivered on the GUI thread.
 class QT_LLM_API ToolCompletion
@@ -189,6 +200,15 @@ public:
     void registerBackgroundTool(const Tool& tool, ToolHandler handler);
 
     void unregisterTool(const QString& toolName);
+
+    // Runs a registered tool as the model would: input repaired and checked
+    // against its definition, consent, timeout for asynchronous tools. `done`
+    // is called with the result - at once for an ordinary tool, later for an
+    // asynchronous one. An unknown or disabled tool, or input that does not
+    // fit, yields an error result ({"status":"error",...}) without the
+    // handler having run.
+    void callTool(const QString& toolName, const QJsonObject& arguments,
+                  ToolResultCallback done, const ToolCallOptions& options = ToolCallOptions());
 
     // Registers this client's tools on `other` as well: same definitions,
     // same handlers, same enabled state - e.g. to give a background agent what
@@ -478,7 +498,8 @@ private:
     void callDeferredTool(const QJsonObject& input, ToolResultCallback done);
 
     void recordSample(const UsageStats& stats);
-    ToolCallHandler wrapHandler(const QString& toolName, const RegisteredTool& rt);
+    ToolCallHandler wrapHandler(const QString& toolName, const RegisteredTool& rt,
+                                const ToolCallOptions& options = ToolCallOptions());
     QJsonObject capResult(const QString& toolName, int toolLimit, QJsonObject result);
     void finishCompaction(const QString& summary);
     void dropOldestTurns();
