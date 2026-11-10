@@ -10,9 +10,12 @@
 #include <QTimer>
 #include <QJsonObject>
 #include <QHash>
+#include <QImage>
 #include <QList>
 #include <QPointer>
 #include "UsageStats.h"
+
+class QMimeData;
 
 namespace QtLLM
 {
@@ -28,7 +31,16 @@ namespace QtLLM
         ~ChatDockWidget();
 
         void addUserMessage(const QString& message);
+        // Adds the assistant's answer. While an answer is being streamed (see
+        // appendAssistantDelta) this completes that bubble with the final
+        // text instead of adding a second one, so an application that calls
+        // it from responseReady() needs no change to get streaming.
         void addAssistantMessage(const QString& message);
+
+        // Streaming: grows the current answer bubble by a piece of text,
+        // creating the bubble on the first piece. Wired up automatically to
+        // Client::responseDelta() by setClient().
+        void appendAssistantDelta(const QString& text);
 
         // Places a prompt into the conversation exactly as if the user had
         // typed it and pressed Send: the user bubble is rendered and
@@ -84,6 +96,32 @@ namespace QtLLM
         // saveConversationRequested() for custom handling.
         void setClient(Client* client);
 
+        // ---- Optional features, all off by default --------------------------
+
+        // Pictures in prompts: paste or drop one into the input field, or use
+        // the attach button. They go out with the next message - through the
+        // bound client (Client::attachImages), or, without one, through
+        // imagesSubmitted() right before messageSent().
+        void setImageInputEnabled(bool enabled);
+        bool imageInputEnabled() const { return m_imageInput; }
+        // The same from code, e.g. a screenshot the application offers.
+        void attachImages(const QList<QImage>& images);
+
+        // "Regenerate" (ask the last prompt again) and "Edit" (take the last
+        // prompt back into the input field). Both remove the last exchange
+        // from the conversation first (Client::removeLastExchange). Needs
+        // setClient().
+        void setRegenerateEnabled(bool enabled);
+        bool regenerateEnabled() const { return m_regenerate; }
+
+        // A button next to Save that continues a conversation saved earlier.
+        // Needs setClient().
+        void setLoadButtonVisible(bool visible);
+        // The same from code: Client::importConversation(), then the
+        // conversation is shown. False when the file does not fit the current
+        // provider.
+        bool loadConversation(const QJsonObject& exported);
+
         void setSendButtonText(const QString& text);
         void setCancelButtonText(const QString& text);
         void setSettingsButtonTooltip(const QString& text);
@@ -94,8 +132,14 @@ namespace QtLLM
 
     signals:
         void messageSent(const QString& message);
+        // Pictures belonging to the messageSent() that follows; only emitted
+        // when no client is bound.
+        void imagesSubmitted(const QList<QImage>& images);
         void cancelRequested();
         void settingsRequested();
+        // Compact button clicked while no client is bound (with a client,
+        // Client::compactConversation() is called directly).
+        void compactRequested();
         void saveConversationRequested();
         // Result of an interview card added via addInterviewWidget()/execInterview().
         void interviewFinished(const QJsonObject& result);
@@ -109,6 +153,11 @@ namespace QtLLM
         void onCancelTimerTimeout();
         void onSaveClicked();
         void onClearClicked();
+        void onCompactClicked();
+        void onAttachClicked();
+        void onRegenerateClicked();
+        void onEditLastClicked();
+        void onLoadClicked();
 
     protected:
         void resizeEvent(QResizeEvent* event) override;
@@ -121,6 +170,25 @@ namespace QtLLM
         void addToolCallCard(const QString& toolName, const QJsonObject& input);
         void completeToolCallCard(const QString& toolName, const QJsonObject& result);
         void addContextClearedMarker();
+        void addContextMarker(const QString& text);
+        QString assistantHtml(const QString& text) const;
+        void renderStreamingBubble();
+        void finishStreamingBubble();
+        bool takePictures(const QMimeData* data);
+        void updateAttachRow();
+        // Removes the bubbles of the last exchange; false when there is none.
+        bool removeLastExchangeBubbles();
+        QString takeLastExchange();
+
+        QWidget*     m_attachRow = nullptr;
+        QPushButton* m_attachButton = nullptr;
+        QPushButton* m_regenerateButton = nullptr;
+        QPushButton* m_editLastButton = nullptr;
+        QPushButton* m_loadButton = nullptr;
+        QList<QImage> m_pendingImages;
+        QList<QPointer<QWidget>> m_userBubbles;   // in order; for regenerate / edit
+        bool m_imageInput = false;
+        bool m_regenerate = false;
 
         QWidget* m_centralWidget = nullptr;
         QVBoxLayout* m_messagesLayout = nullptr;
@@ -132,7 +200,8 @@ namespace QtLLM
         QPushButton* m_settingsButton = nullptr;
         ContextUsageBar* m_contextBar = nullptr;
         QPushButton* m_clearButton = nullptr;
-        Client* m_client = nullptr;  // optional conversation source for built-in Save
+        QPushButton* m_compactButton = nullptr;
+        QPointer<Client> m_client;   // optional conversation source for built-in Save; may be destroyed first
         QMetaObject::Connection m_toolStatusConn;  // auto statusText on toolInvoked
         QMetaObject::Connection m_toolDebugInvokedConn;
         QMetaObject::Connection m_toolDebugCompletedConn;
@@ -144,6 +213,11 @@ namespace QtLLM
         QLabel* m_statusLabel = nullptr;
         QLabel* m_tokenLabel = nullptr;
         QTimer m_cancelTimer;
+
+        // The bubble an answer is currently streaming into.
+        QPointer<QLabel> m_streamLabel;
+        QString          m_streamText;
+        QTimer           m_streamRenderTimer;   // coalesces deltas into ~20 repaints a second
         QTimer m_tooltipTimer;
         bool m_autoScroll = true;
         bool m_programmaticScroll = false;

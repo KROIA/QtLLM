@@ -4,6 +4,8 @@
 #include "HttpTransport.h"
 #include <QUrl>
 #include <QQueue>
+#include <QSharedPointer>
+#include <QVector>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
@@ -24,10 +26,17 @@ public:
     void setSystemPrompt(const QString& systemPrompt) override;
     void setUrl(const QUrl& url);
     void setTools(const QList<QJsonObject>& toolSchemas,
-                  const QMap<QString, ToolHandler>& handlers) override;
+                  const QMap<QString, ToolCallHandler>& handlers) override;
 
     void beginTurn(const QString& userMessage) override;
+    void beginTurn(const QString& userMessage, const QJsonArray& images) override;
+    bool supportsImageInput() const override { return true; }
+    bool cancelTurn() override;
     void clearHistory() override;
+    void replaceHistory(const QJsonArray& messages) override;
+    // Sent as options.num_ctx, so the server really works with the window the
+    // application shows and compacts against. 0 = Ollama's own default.
+    void setContextLimit(int tokens) override;
     void clearStats() override;
     void fetchModels() override;
     QJsonArray conversationMessages() const override;
@@ -39,13 +48,27 @@ private slots:
     void onModelsTransportError(const QString& message);
     void onCapabilityReplyReceived(const QByteArray& data);
     void onCapabilityTransportError(const QString& message);
+    void onStreamChunk(const QByteArray& data);
+    void onStreamFinished();
 
 private:
-    void        startNewTurn(const QString& userMessage);
+    void        startNewTurn(const QJsonObject& userMessage);
     void        drainQueue();
     QJsonObject buildRequestBody() const;
     void        processResponse(const QJsonObject& responseJson);
-    void        executeToolCalls(const QJsonArray& toolCalls);
+    void        finishTurn(const QString& text);
+    void        failTurn(const QString& message);
+    // One round of tool calls; handlers may answer later. See ClaudeProtocol.
+    struct ToolRound
+    {
+        QVector<QJsonObject> results;     // "tool" messages, by call index
+        QVector<bool>        done;
+        int                  pending = 0;
+        int                  generation = 0;
+        QString              text;        // what the assistant wrote alongside the calls
+    };
+    void        executeToolCalls(const QJsonArray& toolCalls, const QString& text);
+    void        finishToolRound(const QSharedPointer<ToolRound>& round);
     void        sendRequest();
     // Some local models aren't trained on Ollama's native tool_calls response
     // format and instead emit the call as plain-text JSON in the message
@@ -69,7 +92,7 @@ private:
     int                        m_maxTokens;
     QString                    m_systemPrompt;
     QList<QJsonObject>         m_toolSchemas;
-    QMap<QString, ToolHandler> m_toolHandlers;
+    QMap<QString, ToolCallHandler> m_toolHandlers;
     QJsonArray                 m_history;
     HttpTransport*             m_transport;
     HttpTransport*             m_modelsTransport;      // separate transport for model listing
@@ -85,14 +108,31 @@ private:
 
     // Turn serialization queue
     bool            m_turnInProgress{false};
-    QQueue<QString> m_pendingTurns;
+    QQueue<QJsonObject> m_pendingTurns;   // complete user messages
     int             m_historyLenBeforeTurn = 0;
+
+    // Tool-use loop guard. Local models loop on a failing tool far more
+    // readily than hosted ones, and nothing else ends such a turn.
+    static constexpr int kMaxToolIterations = 25;
+    int             m_turnToolIterations = 0;
+    int             m_turnGeneration = 0;   // bumped whenever a turn ends
+
+    // Streaming: Ollama sends one JSON object per line; the lines are folded
+    // back into the single response object processResponse() expects.
+    void            handleStreamLine(const QByteArray& line);
+    QByteArray      m_streamBuffer;
+    QString         m_streamContent;
+    QJsonArray      m_streamToolCalls;
+    QJsonObject     m_streamFinal;          // the "done": true line (token counts)
+    QString         m_streamError;
 
     // Stats tracking
     QElapsedTimer m_turnTimer;
     int  m_turnInputTokens  = 0;
     int  m_turnOutputTokens = 0;
     int  m_turnToolCalls    = 0;
+    int  m_lastContextTokens = 0;
+    int  m_contextLimit     = 0;
     bool m_turnTimerStarted = false;
     int  m_sessionInputTokens  = 0;
     int  m_sessionOutputTokens = 0;

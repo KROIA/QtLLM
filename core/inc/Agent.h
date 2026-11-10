@@ -24,6 +24,41 @@ struct QT_LLM_API AgentConfig
     QString  systemPrompt;
     int      maxTokens  = 1024;
     double   costCapUsd = 0.0;            // 0 = unlimited
+    // Background work is usually simple; Effort::Low makes it cheaper and faster.
+    Effort   effort     = Effort::Default;
+    // Agents talking to each other, off by default. On: other agents (and a
+    // chat with registerAgentMessagingTools()) can find this agent and send it
+    // messages, and it gets the tools to do the same - see below.
+    bool     messaging  = false;
+    // One line that tells the others what this agent is for; it is what they
+    // choose by. Shown by list_agents.
+    QString  description;
+};
+
+// One tool call an agent made. Input and result are compact JSON, cut at
+// Agent::kMaxRecordedJsonChars so a huge result does not stay in memory.
+struct QT_LLM_API AgentToolCall
+{
+    QString name;
+    QString input;
+    QString result;              // empty while the tool is still running
+    qint64  startedAtMs = 0;
+    qint64  durationMs  = 0;
+};
+
+// One ask() the agent worked on: the prompt, what came back, and what it cost.
+struct QT_LLM_API AgentTask
+{
+    QString prompt;
+    QString reply;               // the answer, or the error text when !ok
+    bool    ok          = false;
+    bool    finished    = false; // false while the turn is in flight
+    qint64  startedAtMs = 0;
+    qint64  durationMs  = 0;
+    int     inputTokens  = 0;
+    int     outputTokens = 0;
+    double  costUsd      = 0.0;
+    QList<AgentToolCall> toolCalls;
 };
 
 // A headless LLM conversation the user never sees.
@@ -53,6 +88,34 @@ public:
     };
     Q_ENUM(State)
 
+    // What an agent did, kept in memory only. Updated while the agent lives
+    // (record()) and handed to AgentRegistry::finishedAgents() when it dies.
+    // Nested because it carries a State; QtLLM::AgentRecord names it outside.
+    struct QT_LLM_API Record
+    {
+        int      id = 0;                 // unique per process, stable across copies
+        QString  name;
+        Provider provider = Provider::Ollama;
+        QString  model;                  // the model actually used
+        QString  systemPrompt;
+        qint64   spawnedAtMs  = 0;
+        qint64   finishedAtMs = 0;       // 0 while the agent is alive
+        State    state = State::Idle;    // the final state once finishedAtMs is set
+        // The most recent kMaxRecordedTasks asks, oldest first.
+        QList<AgentTask> tasks;
+
+        // Totals over the agent's whole life, including tasks no longer kept.
+        int      turns        = 0;       // finished tasks, ok or not
+        int      toolCalls    = 0;
+        int      inputTokens  = 0;
+        int      outputTokens = 0;
+        double   costUsd      = 0.0;
+        qint64   workingMs    = 0;       // sum of the finished tasks' durations
+    };
+
+    static constexpr int kMaxRecordedTasks     = 50;
+    static constexpr int kMaxRecordedJsonChars = 4000;
+
     // ok is false when the turn failed or was refused; text then holds the reason.
     using AskCallback = std::function<void(const QString& text, bool ok)>;
 
@@ -69,6 +132,7 @@ public:
     QString lastPrompt()    const { return m_lastPrompt; }
     QString lastReply()     const { return m_lastReply; }
     QString lastError()     const { return m_lastError; }
+    const Record& record()  const { return m_record; }
 
     // Queued one-shot call; the callback runs on the GUI thread once the turn
     // resolves. Conversation history persists across calls, so the agent
@@ -106,8 +170,16 @@ private:
     void dispatchNext();
     void finishCurrent(const QString& text, bool ok);
     void drainQueue(const QString& reason);
+    AgentTask* openTask();
+    void closeTask(const QString& text, bool ok);
+    void onToolInvoked(const QString& toolName, const QJsonObject& input);
+    void onToolCompleted(const QString& toolName, const QJsonObject& result);
 
     AgentConfig        m_config;
+    Record             m_record;
+    // Stats arrive after responseReady, when the next queued ask may already
+    // be running - so they belong to the last finished task, not the open one.
+    bool               m_awaitingStats = false;
     State              m_state = State::Idle;
     // Nothing is sent until the provider has answered with its model list;
     // sending before that is what produces "Model not found" on the very first
@@ -124,4 +196,48 @@ private:
     QString            m_lastError;
 };
 
+using AgentRecord = Agent::Record;
+
+// Lets the model of `client` delegate work: registers the tool "run_subagent".
+// Each call spawns an Agent from configProvider() (asked per call, so it can
+// follow the provider the user selected), gives it the task and returns its
+// answer as the tool result. Several calls in one response run side by side.
+//
+// A subagent starts with an empty conversation. With shareTools it gets the
+// tools `client` has at that moment (Client::shareToolsWith) - except
+// run_subagent itself, so agents cannot multiply, and the tools that need the
+// user in front of them (question card, dialogs, repeating tasks), which an
+// agent refuses anyway. onSpawn runs after that: the place to add or remove
+// tools and to connect to the agent's signals.
+//
+// The agent is a child of `client`, listed in AgentRegistry while it works and
+// deleted when it has answered. At most maxParallel run at a time; further
+// calls are refused with an error the model can react to.
+// Agents talking to each other. Registers two tools on `client`:
+//
+//   list_agents                 the agents that accept messages: name,
+//                               description, state
+//   message_agent(to, message)  hands the message to that agent as a task
+//                               and returns its answer as the tool result
+//
+// An agent with AgentConfig::messaging gets both automatically and is the
+// only kind that can be addressed; call this function yourself to let another
+// client - typically the chat - talk to those agents too. The receiver sees
+// who is writing ("[Message from agent 'name']"), works through its queue in
+// order and answers with its normal reply.
+//
+// Two agents waiting for each other would never finish, so a message to an
+// agent that is itself waiting for the sender's answer is refused with an
+// error the model can act on. An agent that is destroyed before it answers
+// ends the call with an error as well.
+QT_LLM_API void registerAgentMessagingTools(Client* client);
+
+QT_LLM_API void registerSubagentTool(Client* client,
+                                     std::function<AgentConfig()> configProvider,
+                                     std::function<void(Agent*)> onSpawn = nullptr,
+                                     int maxParallel = 4,
+                                     bool shareTools = true);
+
 } // namespace QtLLM
+
+Q_DECLARE_METATYPE(QtLLM::AgentRecord)

@@ -11,16 +11,57 @@ namespace QtLLM
         , m_apiKey(apiKey)
         , m_messagesUrl(messagesUrl)
         , m_countTransport(new HttpTransport(this))
+        , m_modelTransport(new HttpTransport(this))
     {
+        connect(m_modelTransport, &HttpTransport::replyReceived, this, &ClaudeContextInfoProvider::onModelReplyReceived);
+        connect(m_modelTransport, &HttpTransport::errorOccurred, this, &ClaudeContextInfoProvider::onModelTransportError);
         connect(m_countTransport, &HttpTransport::replyReceived, this, &ClaudeContextInfoProvider::onCountReplyReceived);
         connect(m_countTransport, &HttpTransport::errorOccurred, this, &ClaudeContextInfoProvider::onCountTransportError);
     }
 
-    void ClaudeContextInfoProvider::fetchContextWindowTokens(const QString&)
+    // Published context window per model family, for endpoints that cannot
+    // be asked. Everything from the 4.6 line on has 1M; older models and
+    // Haiku 4.5 have 200k. Unknown names get the smaller, safer figure.
+    static int publishedContextWindow(const QString& model)
     {
-        // Mocked: no Anthropic endpoint reports this. Every current Claude
-        // model publishes 200k tokens (docs only, not queryable).
-        QTimer::singleShot(0, this, [this]() { emit contextWindowTokensReady(200000); });
+        static const char* const largeFamilies[] = {
+            "fable", "mythos", "opus-5", "sonnet-5", "haiku-5",
+            "opus-4-6", "opus-4-7", "opus-4-8", "sonnet-4-6"};
+        for (const char* family : largeFamilies) {
+            if (model.contains(QLatin1String(family)))
+                return 1000000;
+        }
+        return 200000;
+    }
+
+    void ClaudeContextInfoProvider::fetchContextWindowTokens(const QString& model)
+    {
+        QUrl url = m_messagesUrl;
+        QString path = url.path();
+        if (model.isEmpty() || m_apiKey.isEmpty() || !path.endsWith("/messages") || m_modelTransport->isBusy()) {
+            const int tokens = publishedContextWindow(model);
+            QTimer::singleShot(0, this, [this, tokens]() { emit contextWindowTokensReady(tokens); });
+            return;
+        }
+        path.chop(int(qstrlen("/messages")));
+        url.setPath(path + "/models/" + model);
+
+        m_windowModel = model;
+        QList<QPair<QByteArray, QByteArray>> headers;
+        headers.append({"x-api-key", m_apiKey.toUtf8()});
+        headers.append({QByteArray("anthropic-version"), QByteArray("2023-06-01")});
+        m_modelTransport->get(url, headers);
+    }
+
+    void ClaudeContextInfoProvider::onModelReplyReceived(const QByteArray& data)
+    {
+        const int reported = QJsonDocument::fromJson(data).object()["max_input_tokens"].toInt();
+        emit contextWindowTokensReady(reported > 0 ? reported : publishedContextWindow(m_windowModel));
+    }
+
+    void ClaudeContextInfoProvider::onModelTransportError(const QString&)
+    {
+        emit contextWindowTokensReady(publishedContextWindow(m_windowModel));
     }
 
     void ClaudeContextInfoProvider::countTokens(const QString& model,

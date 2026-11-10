@@ -62,10 +62,14 @@ private slots:
     void onPullError();
 
 private:
+    void handlePullLine(const QByteArray& line);
+    void finishPull(bool success, const QString& errorMessage);
+
     QString                 m_baseUrl;
     QNetworkAccessManager   m_nam;
     QNetworkReply*          m_pullReply  = nullptr;
     QString                 m_pullingModel;
+    QString                 m_pullError;  // in-band {"error":...} line of the current pull
 };
 
 } // namespace QtLLM

@@ -8,8 +8,14 @@
 
 namespace QtLLM {
 
+struct UsageHistoryStore;
+
 // Persistent per-turn usage history stored as JSONL.
 // Owned by Client; provides data for UsageStatsWidget.
+// All instances using the same file path share one in-memory sample store:
+// the file is read once per process, and append() through any instance
+// updates every instance and emits sampleAppended() on each of them.
+// GUI-thread only.
 class QT_LLM_API UsageHistory : public QObject
 {
     Q_OBJECT
@@ -17,7 +23,8 @@ public:
     explicit UsageHistory(QObject* parent = nullptr);
     ~UsageHistory() override;
 
-    // Override the default storage path (must be called before first append/load).
+    // Override the default storage path; switches this instance to the store
+    // shared by all instances using that path.
     void setFilePath(const QString& path);
 
     // Append a sample to memory and persist to JSONL file.
@@ -41,23 +48,28 @@ public:
     // Session start epoch (set at construction time).
     qint64 sessionStartMs() const;
 
-    // Discard in-memory samples and re-read them from the JSONL file. Lets a
-    // read-only viewer pick up samples appended by another instance/process.
+    // Discard in-memory samples and re-read them from the JSONL file (for all
+    // instances sharing it). Lets a viewer pick up samples appended by
+    // another process.
     void reload();
 
-    // TODO: rotation/cap is a future concern.
+    // Removes all samples (for all instances sharing the file) and the file.
+    // Samples older than two years are dropped automatically on load.
     void clear();
 
 signals:
     void sampleAppended(const QtLLM::UsageSample& sample);
 
 private:
-    void loadFromFile();
+    void attachStore();
+    void detachStore();
+    UsageHistoryStore& store() const;
+    void loadFromFile() const;
     static QJsonObject sampleToJson(const UsageSample& s);
     static UsageSample sampleFromJson(const QJsonObject& obj);
     QString defaultFilePath() const;
 
-    QVector<UsageSample> m_samples;
+    UsageHistoryStore*   m_store = nullptr;
     QString              m_filePath;
     qint64               m_sessionStartMs = 0;
 };

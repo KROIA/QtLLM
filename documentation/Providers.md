@@ -1,6 +1,15 @@
 # Providers
 
-QtLLM supports two LLM providers selected at `Client` construction time. The public API is identical for both — only the constructor and model name differ.
+QtLLM supports three backends. The public API is identical for all — only the constructor (or `Client::setProvider()`) and the model name differ.
+
+| Backend | `Provider` | Credentials | Billing |
+|---|---|---|---|
+| Anthropic API | `Claude` | API key | per token |
+| Microsoft Foundry | `Claude` + Foundry endpoint | Foundry API key | per token (Azure) |
+| Ollama | `Ollama` | none | free, local |
+| Claude subscription | `ClaudeCode` | Claude Code login | flat rate (Pro / Max / Team plan) |
+
+In `SettingsDialog` these are four entries of the **Provider** combo, each with its own fields; `SettingsDialog::applyTo(&client)` applies the choice.
 
 ---
 
@@ -11,7 +20,7 @@ QtLLM::Client client(
     qgetenv("ANTHROPIC_API_KEY"),
     "https://api.anthropic.com/v1/messages"
 );
-client.setModel("claude-sonnet-4-5");
+client.setModel("claude-sonnet-5-5");   // also the default when none is set
 ```
 
 ### Endpoint
@@ -22,19 +31,62 @@ The default URL (`https://api.anthropic.com/v1/messages`) is pre-filled when omi
 
 The API key is sent as the `x-api-key` header. Store it in an environment variable — never hard-code it in source.
 
-### Supported models (as of mid-2025)
+### Current models (as of November 2026)
 
-| Model ID | Context | Notes |
-|---|---|---|
-| `claude-opus-4-7` | 200k | Most capable |
-| `claude-sonnet-4-6` | 200k | Balanced performance / cost |
-| `claude-haiku-4-5` | 200k | Fastest and cheapest |
+| Model ID | Context | Price in / out per 1M | Notes |
+|---|---|---|---|
+| `claude-sonnet-5-5` | 1M | $2 / $10 | **Library default** — best value for tool work |
+| `claude-haiku-5-5` | 1M | $0.10 / $0.50 | Cheapest; first fallback when the default is not offered |
+| `claude-opus-5-5` | 1M | $4 / $20 | Most capable Opus |
+| `claude-fable-5-2` | 1M | $8 / $40 | Most capable overall |
+
+A model the endpoint does not offer is replaced automatically (`modelChanged()` reports it): first by the default, then by the next cheaper current model, and only then by whatever the endpoint lists first.
 
 See [docs.anthropic.com/models](https://docs.anthropic.com/en/docs/about-claude/models) for the current list.
 
 ### Cost tracking
 
 `UsageStats::sessionCostUsd` is estimated from token counts and a hard-coded price table. See [API.md](API.md#cost-estimation-claude-only) for the table and caveats.
+
+---
+
+## Microsoft Foundry
+
+Claude deployed in a Foundry resource speaks the same Messages protocol, so it uses `Provider::Claude` with the resource's endpoint and key:
+
+```cpp
+QtLLM::Client client(
+    qgetenv("ANTHROPIC_FOUNDRY_API_KEY"),
+    qgetenv("ANTHROPIC_FOUNDRY_BASE_URL") + QString("/v1/messages")
+);
+client.setModel("claude-sonnet-5-5");   // the deployment name
+```
+
+The model name is the **deployment** name. Where the endpoint offers a model list, an unknown model is replaced by the first offered one (`modelChanged()` reports it). Token counting (`count_tokens`) is often not available there; the context display then stays on estimates.
+
+---
+
+## Claude subscription (Claude Code login)
+
+```cpp
+QtLLM::Client client(QtLLM::Provider::ClaudeCode, QString());
+client.setModel("sonnet");   // alias: sonnet | opus | haiku | fable, or a full model id
+```
+
+A claude.ai plan cannot call the Messages API — Anthropic accepts those credentials only from Claude Code. So this provider runs each turn through the installed CLI (`claude -p`), which owns the login and the conversation.
+
+**Setup, once:** install [Claude Code](https://claude.com/claude-code), run `claude` in a terminal, `/login` with the claude.ai account. `SettingsDialog` shows the login state; `ClaudeCodeProtocol::queryAuthStatus()` gives it to application code.
+
+How it behaves:
+
+- **Tools work unchanged.** Registered handlers are served to the CLI over MCP on a loopback-only port protected by a random token. They still run synchronously on the GUI thread; consent handler, validation and call cap apply as usual. The model sees them as `mcp__qtllm__<name>`.
+- **Isolated from the coding setup.** The CLI starts without its built-in tools (shell, file edits), user settings, hooks, plugins and `CLAUDE.md`. The model gets the application's system prompt and tools only.
+- **Environment.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and the cloud-provider switches are removed for the child process; otherwise the CLI would silently bill those instead of the plan.
+- **Cost is reported as 0.** Usage counts against the plan's limits, not dollars. Token counts are still recorded. `AgentConfig::costCapUsd` therefore never trips.
+- **A process launch per turn** adds latency, and `setMaxTokens()` has no effect.
+- **Limits.** When the plan's usage limit is reached the turn fails with the CLI's message via `errorOccurred()`.
+
+The login is personal. An application distributed to other people needs each of them to have Claude Code and their own plan; check Anthropic's terms before shipping that as a feature.
 
 ---
 
@@ -98,17 +150,34 @@ Token counts are populated from Ollama's `prompt_eval_count` and `eval_count` re
 
 ---
 
-## Switching providers at runtime
+## OpenAI-compatible servers
 
-`Client` is bound to a provider at construction. To switch providers, create a new `Client` instance.
+`Provider::OpenAI` speaks the OpenAI Chat Completions API, which most local servers offer: LM Studio (`http://localhost:1234/v1`), llama.cpp server, vLLM, Ollama (`http://localhost:11434/v1`), and hosted services.
 
 ```cpp
-// Swap from Ollama to Claude
-m_client = std::make_unique<QtLLM::Client>(
-    qgetenv("ANTHROPIC_API_KEY"),
-    "https://api.anthropic.com/v1/messages",
-    this
-);
+QtLLM::Client client(QtLLM::Provider::OpenAI, "http://localhost:1234/v1");   // key optional
 ```
 
-Re-register any tools and re-apply `setModel` / `setSystemPrompt` after the swap.
+- The url may be the base or the full `.../chat/completions`; a bare host gets `/v1`.
+- Models come from `GET <base>/models`; a model the server does not list is replaced by one it does.
+- Streaming, tools (also asynchronous), pictures in prompts and in tool results, `setParallelToolCalls(false)`, effort as `reasoning_effort`.
+- An optional request field the server rejects (`stream_options`, `reasoning_effort`, `parallel_tool_calls`, `max_tokens` vs `max_completion_tokens`) is left out from then on.
+- No tokenizer endpoint: the context bar shows estimates. Cost is 0 for models the price table does not know.
+
+---
+
+## Switching providers at runtime
+
+```cpp
+client.setProvider(QtLLM::Provider::ClaudeCode, QString());            // subscription
+client.setProvider(QtLLM::Provider::Ollama, "http://localhost:11434"); // local
+client.setProvider(QtLLM::Provider::Claude, foundryUrl, foundryKey);   // Foundry / API key
+```
+
+Registered tools, the system prompt and settings are kept. The conversation is not: message formats differ between backends, so a switch starts a new one. Moving between the Anthropic API and Foundry needs no switch at all — `setEndpointUrl()` + `setApiKey()` keep the conversation.
+
+With the settings dialog, one call does all of it:
+
+```cpp
+connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() { dlg.applyTo(&client); });
+```

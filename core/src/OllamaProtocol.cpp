@@ -1,5 +1,8 @@
 #include "OllamaProtocol.h"
+#include "ToolResult.h"
 #include <QJsonDocument>
+#include <QDebug>
+#include <QPointer>
 
 namespace QtLLM {
 
@@ -26,6 +29,10 @@ OllamaProtocol::OllamaProtocol(const QUrl& url, QObject* parent)
             this, &OllamaProtocol::onReplyReceived);
     connect(m_transport, &HttpTransport::errorOccurred,
             this, &OllamaProtocol::onTransportError);
+    connect(m_transport, &HttpTransport::chunkReceived,
+            this, &OllamaProtocol::onStreamChunk);
+    connect(m_transport, &HttpTransport::streamFinished,
+            this, &OllamaProtocol::onStreamFinished);
     connect(m_capabilityTransport, &HttpTransport::replyReceived,
             this, &OllamaProtocol::onCapabilityReplyReceived);
     connect(m_capabilityTransport, &HttpTransport::errorOccurred,
@@ -59,7 +66,7 @@ void OllamaProtocol::setUrl(const QUrl& url)
 }
 
 void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
-                               const QMap<QString, ToolHandler>& handlers)
+                               const QMap<QString, ToolCallHandler>& handlers)
 {
     m_toolSchemas  = toolSchemas;
     m_toolHandlers = handlers;
@@ -67,32 +74,49 @@ void OllamaProtocol::setTools(const QList<QJsonObject>& toolSchemas,
 
 void OllamaProtocol::beginTurn(const QString& userMessage)
 {
-    if (m_turnInProgress) {
-        m_pendingTurns.enqueue(userMessage);
-        return;
-    }
-    startNewTurn(userMessage);
+    beginTurn(userMessage, QJsonArray());
 }
 
-void OllamaProtocol::startNewTurn(const QString& userMessage)
+void OllamaProtocol::beginTurn(const QString& userMessage, const QJsonArray& images)
+{
+    QJsonObject msg;
+    msg["role"]    = "user";
+    msg["content"] = userMessage;
+    if (!images.isEmpty()) {
+        // ponytail: sent to whatever model is selected. One without vision
+        // ignores or rejects the pictures; checking /api/show for the
+        // "vision" capability first is the upgrade.
+        QJsonArray data;
+        for (const QJsonValue& value : images)
+            data.append(value.toObject()["data"]);
+        msg["images"] = data;
+    }
+
+    if (m_turnInProgress) {
+        m_pendingTurns.enqueue(msg);
+        return;
+    }
+    startNewTurn(msg);
+}
+
+void OllamaProtocol::startNewTurn(const QJsonObject& userMessage)
 {
     m_turnInProgress   = true;
     m_turnInputTokens  = 0;
     m_turnOutputTokens = 0;
     m_turnToolCalls    = 0;
     m_turnTimerStarted = false;
+    m_turnToolIterations = 0;
     m_historyLenBeforeTurn = m_history.size();
 
-    QJsonObject msg;
-    msg["role"]    = "user";
-    msg["content"] = userMessage;
-    m_history.append(msg);
+    m_history.append(userMessage);
     sendRequest();
 }
 
 void OllamaProtocol::drainQueue()
 {
     m_turnInProgress = false;
+    ++m_turnGeneration;
     if (!m_pendingTurns.isEmpty())
         startNewTurn(m_pendingTurns.dequeue());
 }
@@ -100,6 +124,7 @@ void OllamaProtocol::drainQueue()
 void OllamaProtocol::sendRequest()
 {
     QJsonObject body  = buildRequestBody();
+    body["stream"] = m_streamingEnabled;
     QByteArray  bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
     if (!m_turnTimerStarted) {
@@ -115,12 +140,135 @@ void OllamaProtocol::sendRequest()
     chatUrl.setPath("/api/chat");
 
     emit requestStarted();
-    m_transport->post(chatUrl, bytes, {});
+    if (m_streamingEnabled) {
+        m_streamBuffer.clear();
+        m_streamContent.clear();
+        m_streamToolCalls = QJsonArray();
+        m_streamFinal = QJsonObject();
+        m_streamError.clear();
+        m_transport->postStream(chatUrl, bytes, {});
+    } else {
+        m_transport->post(chatUrl, bytes, {});
+    }
+}
+
+void OllamaProtocol::onStreamChunk(const QByteArray& data)
+{
+    m_streamBuffer += data;
+    int end;
+    while ((end = m_streamBuffer.indexOf('\n')) >= 0) {
+        const QByteArray line = m_streamBuffer.left(end).trimmed();
+        m_streamBuffer.remove(0, end + 1);
+        if (!line.isEmpty())
+            handleStreamLine(line);
+    }
+}
+
+void OllamaProtocol::handleStreamLine(const QByteArray& line)
+{
+    const QJsonObject obj = QJsonDocument::fromJson(line).object();
+    if (obj.contains("error")) {
+        m_streamError = obj["error"].toString();
+        return;
+    }
+    const QJsonObject message = obj["message"].toObject();
+    const QString text = message["content"].toString();
+    if (!text.isEmpty()) {
+        m_streamContent += text;
+        emit responseDelta(text);
+    }
+    for (const QJsonValue& call : message["tool_calls"].toArray())
+        m_streamToolCalls.append(call);
+    if (obj["done"].toBool())
+        m_streamFinal = obj;
+}
+
+void OllamaProtocol::onStreamFinished()
+{
+    if (!m_turnInProgress)
+        return;
+    // A last line without a trailing newline.
+    const QByteArray rest = m_streamBuffer.trimmed();
+    m_streamBuffer.clear();
+    if (!rest.isEmpty())
+        handleStreamLine(rest);
+
+    if (!m_streamError.isEmpty()) {
+        failTurn(m_streamError);
+        return;
+    }
+    if (m_streamFinal.isEmpty()) {
+        failTurn(QStringLiteral("The response stream ended before the answer was complete"));
+        return;
+    }
+
+    QJsonObject message{{"role", "assistant"}, {"content", m_streamContent}};
+    if (!m_streamToolCalls.isEmpty())
+        message["tool_calls"] = m_streamToolCalls;
+    QJsonObject response = m_streamFinal;
+    response["message"] = message;
+    processResponse(response);
+}
+
+bool OllamaProtocol::cancelTurn()
+{
+    if (!m_turnInProgress)
+        return false;
+    m_transport->abort();
+    m_pendingTurns.clear();
+    rollbackFailedTurn();
+    emit requestFinished();
+    drainQueue();
+    return true;
+}
+
+void OllamaProtocol::failTurn(const QString& message)
+{
+    rollbackFailedTurn();
+    emit errorOccurred(message);
+    emit requestFinished();
+    drainQueue();
+}
+
+void OllamaProtocol::finishTurn(const QString& text)
+{
+    // Finalize session stats (no cost for local models)
+    m_sessionInputTokens  += m_turnInputTokens;
+    m_sessionOutputTokens += m_turnOutputTokens;
+    m_sessionToolCalls    += m_turnToolCalls;
+    ++m_sessionTurnCount;
+
+    UsageStats stats;
+    stats.inputTokens         = m_turnInputTokens;
+    stats.outputTokens        = m_turnOutputTokens;
+    stats.toolCalls           = m_turnToolCalls;
+    stats.durationMs          = m_turnTimer.elapsed();
+    stats.contextTokens       = m_lastContextTokens;
+    stats.sessionInputTokens  = m_sessionInputTokens;
+    stats.sessionOutputTokens = m_sessionOutputTokens;
+    stats.sessionToolCalls    = m_sessionToolCalls;
+    stats.sessionTurnCount    = m_sessionTurnCount;
+    stats.sessionCostUsd      = 0.0;
+
+    emit requestFinished();
+    emit responseReady(text);
+    emit statsReady(stats);
+    drainQueue();
 }
 
 void OllamaProtocol::clearHistory()
 {
     m_history = QJsonArray();
+}
+
+void OllamaProtocol::replaceHistory(const QJsonArray& messages)
+{
+    m_history = messages;
+}
+
+void OllamaProtocol::setContextLimit(int tokens)
+{
+    m_contextLimit = tokens;
 }
 
 void OllamaProtocol::clearStats()
@@ -153,12 +301,18 @@ QJsonObject OllamaProtocol::buildRequestBody() const
 
     QJsonObject options;
     options["num_predict"] = m_maxTokens;
+    if (m_contextLimit > 0)
+        options["num_ctx"] = m_contextLimit;
 
     QJsonObject body;
     body["model"]   = m_model;
     body["messages"] = messages;
     body["stream"]  = false;
     body["options"] = options;
+    // ponytail: only "low" is mapped (thinking off - accepted by every model);
+    // thinking levels for the models that have them need a capability check first.
+    if (m_effort == Effort::Low)
+        body["think"] = false;
 
     if (!m_toolSchemas.isEmpty()) {
         QJsonArray tools;
@@ -174,21 +328,17 @@ QJsonObject OllamaProtocol::buildRequestBody() const
 void OllamaProtocol::onReplyReceived(const QByteArray& data)
 {
     QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (doc.isNull()) {
-        rollbackFailedTurn();
-        emit errorOccurred("Failed to parse Ollama response");
-        emit requestFinished();
-        drainQueue();
+    if (!doc.isObject()) {
+        failTurn(QStringLiteral("Failed to parse Ollama response (HTTP %1): %2")
+                     .arg(m_transport->lastStatusCode())
+                     .arg(QString::fromUtf8(data.left(200))));
         return;
     }
 
     QJsonObject root = doc.object();
 
     if (root.contains("error")) {
-        rollbackFailedTurn();
-        emit errorOccurred(root["error"].toString());
-        emit requestFinished();
-        drainQueue();
+        failTurn(root["error"].toString());
         return;
     }
 
@@ -200,6 +350,7 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
     // Ollama reports token counts in the top-level response object
     m_turnInputTokens  += responseJson["prompt_eval_count"].toInt();
     m_turnOutputTokens += responseJson["eval_count"].toInt();
+    m_lastContextTokens = responseJson["prompt_eval_count"].toInt() + responseJson["eval_count"].toInt();
 
     QJsonObject message    = responseJson["message"].toObject();
     QJsonArray  toolCalls  = message["tool_calls"].toArray();
@@ -215,8 +366,8 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
         assistantMsg["tool_calls"] = toolCalls;
         m_history.append(assistantMsg);
 
-        executeToolCalls(toolCalls);
-        sendRequest();
+        // Continues in finishToolRound() once every handler has answered.
+        executeToolCalls(toolCalls, text);
         return;
     }
 
@@ -225,35 +376,26 @@ void OllamaProtocol::processResponse(const QJsonObject& responseJson)
     assistantMsg["content"] = text;
     m_history.append(assistantMsg);
 
-    // Finalize session stats (no cost for local models)
-    m_sessionInputTokens  += m_turnInputTokens;
-    m_sessionOutputTokens += m_turnOutputTokens;
-    m_sessionToolCalls    += m_turnToolCalls;
-    ++m_sessionTurnCount;
-
-    UsageStats stats;
-    stats.inputTokens         = m_turnInputTokens;
-    stats.outputTokens        = m_turnOutputTokens;
-    stats.toolCalls           = m_turnToolCalls;
-    stats.durationMs          = m_turnTimer.elapsed();
-    stats.sessionInputTokens  = m_sessionInputTokens;
-    stats.sessionOutputTokens = m_sessionOutputTokens;
-    stats.sessionToolCalls    = m_sessionToolCalls;
-    stats.sessionTurnCount    = m_sessionTurnCount;
-    stats.sessionCostUsd      = 0.0;
-
-    emit requestFinished();
-    emit responseReady(text);
-    emit statsReady(stats);
-    drainQueue();
+    finishTurn(text);
 }
 
-void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
+void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls, const QString& text)
 {
-    QJsonArray toolResults;
+    auto round = QSharedPointer<ToolRound>::create();
+    const int count = toolCalls.size();
+    round->results.resize(count);
+    round->done = QVector<bool>(count, false);
+    round->pending = count;
+    round->generation = m_turnGeneration;
+    round->text = text;
 
-    for (const QJsonValue& val : toolCalls) {
-        QJsonObject toolCall = val.toObject();
+    QPointer<OllamaProtocol> self(this);
+
+    for (int i = 0; i < count; ++i) {
+        if (!self || round->generation != m_turnGeneration)
+            return;
+
+        QJsonObject toolCall = toolCalls[i].toObject();
         QJsonObject fn       = toolCall["function"].toObject();
         QString     toolName = fn["name"].toString();
 
@@ -268,44 +410,86 @@ void OllamaProtocol::executeToolCalls(const QJsonArray& toolCalls)
                 toolInput = argDoc.object();
         }
 
+        auto complete = [this, self, round, i](const QJsonObject& toolMessage) {
+            if (!self || round->generation != m_turnGeneration || round->done[i])
+                return;
+            round->done[i] = true;
+            round->results[i] = toolMessage;
+            if (--round->pending == 0)
+                finishToolRound(round);
+        };
+
         if (!m_toolHandlers.contains(toolName)) {
-            emit errorOccurred("No handler registered for tool: " + toolName);
+            // Reported to the model only - it can recover by picking a real
+            // tool. This is not a failure of the turn.
+            qWarning() << "OllamaProtocol: model called unknown tool" << toolName;
+
+            QStringList available;
+            for (const QJsonObject& schema : m_toolSchemas)
+                available.append(schema["function"].toObject()["name"].toString());
 
             QJsonObject errorResult;
-            errorResult["role"]    = "tool";
-            errorResult["content"] = "Error: unknown tool";
-            toolResults.append(errorResult);
+            errorResult["role"]      = "tool";
+            errorResult["tool_name"] = toolName;
+            errorResult["content"]   = QStringLiteral("Error: unknown tool \"%1\". Available tools: %2")
+                                           .arg(toolName, available.join(", "));
+            complete(errorResult);
             continue;
         }
 
         ++m_turnToolCalls;
         emit toolInvoked(toolName, toolInput);
+
+        auto done = [this, self, round, complete, toolName](const QJsonObject& handlerResult) {
+            if (!self || round->generation != m_turnGeneration)
+                return;
+            QJsonObject result = handlerResult;
+            // ponytail: images are dropped (the JSON keeps an "images": N note).
+            // Passing them on needs a per-model vision capability check first.
+            toolTakeImages(result);
+            emit toolCompleted(toolName, result);
+
+            QJsonObject toolResult;
+            toolResult["role"]      = "tool";
+            // Lets the model match results to calls when it made several at once.
+            toolResult["tool_name"] = toolName;
+            toolResult["content"]   = QString::fromUtf8(
+                QJsonDocument(result).toJson(QJsonDocument::Compact));
+            complete(toolResult);
+        };
+
+        // A copy: setTools() may replace the map while the handler runs.
+        const ToolCallHandler handler = m_toolHandlers.value(toolName);
         // A throwing handler must not unwind through the network callback
-        // chain — convert to an is_error tool result and keep the turn alive.
-        QJsonObject result;
+        // chain — convert to an error result and keep the turn alive.
         try {
-            result = m_toolHandlers[toolName](toolInput);
+            handler(toolInput, done);
         } catch (const std::exception& e) {
-            result = QJsonObject{{"status", "error"},
-                                 {"message", QString("Internal error: %1").arg(e.what())}};
+            done(QJsonObject{{"status", "error"},
+                             {"message", QString("Internal error: %1").arg(e.what())}});
         } catch (...) {
-            result = QJsonObject{{"status", "error"},
-                                 {"message", "Internal error: unknown exception in tool handler"}};
+            done(QJsonObject{{"status", "error"},
+                             {"message", "Internal error: unknown exception in tool handler"}});
         }
-        emit toolCompleted(toolName, result);
+    }
+}
 
-        QString resultStr = QString::fromUtf8(
-            QJsonDocument(result).toJson(QJsonDocument::Compact));
+void OllamaProtocol::finishToolRound(const QSharedPointer<ToolRound>& round)
+{
+    for (const QJsonObject& result : round->results)
+        m_history.append(result);
 
-        QJsonObject toolResult;
-        toolResult["role"]    = "tool";
-        toolResult["content"] = resultStr;
-        toolResults.append(toolResult);
+    if (++m_turnToolIterations > kMaxToolIterations) {
+        QString text = round->text;
+        if (!text.isEmpty())
+            text += QStringLiteral("\n\n");
+        text += QStringLiteral("[Stopped: tool-use iteration limit (%1) reached]")
+                    .arg(kMaxToolIterations);
+        finishTurn(text);
+        return;
     }
 
-    for (const QJsonValue& val : toolResults) {
-        m_history.append(val);
-    }
+    sendRequest();
 }
 
 QJsonArray OllamaProtocol::extractFallbackToolCall(const QString& text) const
@@ -335,10 +519,7 @@ QJsonArray OllamaProtocol::extractFallbackToolCall(const QString& text) const
 
 void OllamaProtocol::onTransportError(const QString& message)
 {
-    rollbackFailedTurn();
-    emit errorOccurred(message);
-    emit requestFinished();
-    drainQueue();
+    failTurn(message);
 }
 
 void OllamaProtocol::rollbackFailedTurn()
@@ -367,7 +548,7 @@ void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (doc.isNull()) {
         m_modelsFetchInProgress = false;
-        emit errorOccurred("Failed to parse Ollama models response");
+        qWarning() << "OllamaProtocol: model list unavailable:" << data.left(200);
         emit modelsFetched({});
         return;
     }
@@ -375,7 +556,7 @@ void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
     QJsonObject root = doc.object();
     if (root.contains("error")) {
         m_modelsFetchInProgress = false;
-        emit errorOccurred(root["error"].toString());
+        qWarning() << "OllamaProtocol: model list unavailable:" << root["error"].toString();
         emit modelsFetched({});
         return;
     }
@@ -395,7 +576,7 @@ void OllamaProtocol::onModelsReplyReceived(const QByteArray& data)
 void OllamaProtocol::onModelsTransportError(const QString& message)
 {
     m_modelsFetchInProgress = false;
-    emit errorOccurred(message);
+    qWarning() << "OllamaProtocol: model list unavailable:" << message;
     emit modelsFetched({});
 }
 

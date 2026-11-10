@@ -17,6 +17,18 @@ InterviewWidget::InterviewWidget(const QJsonObject& request, QWidget* parent)
     : QFrame(parent)
 {
     setFrameShape(QFrame::NoFrame);
+    // The card has a fixed light background, so its text must not follow a
+    // dark application palette.
+    QPalette cardPalette = palette();
+    for (QPalette::ColorRole role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText}) {
+        cardPalette.setColor(role, QColor(0x1a, 0x1a, 0x1a));
+        cardPalette.setColor(QPalette::Disabled, role, QColor(0x80, 0x80, 0x80));
+    }
+    // Controls on it (tour buttons, check boxes, line edits) stay light as well.
+    cardPalette.setColor(QPalette::Button, QColor(0xe1, 0xe1, 0xe1));
+    cardPalette.setColor(QPalette::Base, Qt::white);
+    cardPalette.setColor(QPalette::Window, QColor(0xf0, 0xf0, 0xf0));
+    setPalette(cardPalette);
     setStyleSheet(
         "QtLLM--InterviewWidget {"
         "  background-color: #F0F6FF;"
@@ -196,7 +208,8 @@ void InterviewWidget::updateSubmitEnabled()
 QJsonObject InterviewWidget::collectAnswers() const
 {
     QJsonObject answers;
-    for (const QuestionBlock& block : m_blocks) {
+    for (int i = 0; i < m_blocks.size(); ++i) {
+        const QuestionBlock& block = m_blocks.at(i);
         QStringList selected;
         for (const OptionRow& row : block.options) {
             if (row.button->isChecked())
@@ -208,10 +221,20 @@ QJsonObject InterviewWidget::collectAnswers() const
                 selected.append(custom);
         }
 
+        // Answers are keyed by question text; an empty or repeated text would
+        // overwrite an earlier answer, so only then append the 1-based position.
+        QString key = block.question;
+        if (key.isEmpty() || answers.contains(key)) {
+            const QString base = key.isEmpty() ? QStringLiteral("Question") : key;
+            key = QStringLiteral("%1 (#%2)").arg(base).arg(i + 1);
+            for (int n = 2; answers.contains(key); ++n)
+                key = QStringLiteral("%1 (#%2.%3)").arg(base).arg(i + 1).arg(n);
+        }
+
         if (block.multiSelect)
-            answers[block.question] = QJsonArray::fromStringList(selected);
+            answers[key] = QJsonArray::fromStringList(selected);
         else
-            answers[block.question] = selected.isEmpty() ? QString() : selected.first();
+            answers[key] = selected.isEmpty() ? QString() : selected.first();
     }
     return answers;
 }

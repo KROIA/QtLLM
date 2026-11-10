@@ -11,12 +11,10 @@ namespace QtLLM
     //  - countTokens() is real: POST /v1/messages/count_tokens, the same
     //    endpoint/tokenizer the Messages API itself uses, returns exact
     //    input_tokens for a given system/tools/messages combination.
-    //  - fetchContextWindowTokens() is a MOCK: Anthropic has no endpoint that
-    //    reports a model's max context window, so this just returns the
-    //    published constant (200k for every current Claude model) on a
-    //    zero-delay timer to keep the async contract honest. Replace the
-    //    body of this one method if Anthropic ever exposes it for real -
-    //    nothing else in this class (or its callers) needs to change.
+    //  - fetchContextWindowTokens() asks the Models API (GET /v1/models/{id},
+    //    field max_input_tokens). Gateways without that endpoint fall back
+    //    to the published size for the model family: 1M for the current
+    //    generation, 200k for older models.
     class QT_LLM_API ClaudeContextInfoProvider : public ContextInfoProvider
     {
         Q_OBJECT
@@ -37,11 +35,15 @@ namespace QtLLM
     private slots:
         void onCountReplyReceived(const QByteArray& data);
         void onCountTransportError(const QString& message);
+        void onModelReplyReceived(const QByteArray& data);
+        void onModelTransportError(const QString& message);
 
     private:
         QString        m_apiKey;
         QUrl           m_messagesUrl;
         HttpTransport* m_countTransport;
+        HttpTransport* m_modelTransport;
+        QString        m_windowModel;   // model the in-flight window lookup is for
         bool           m_countTokensUnsupported = false;
     };
 }

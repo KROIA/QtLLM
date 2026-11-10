@@ -18,7 +18,7 @@ int main(int argc, char* argv[])
 
     // ANTHROPIC_FOUNDRY_BASE_URL is a base URL — append the messages endpoint path
     QtLLM::Client client(apiKey, baseUrl + "/v1/messages");
-    client.setModel("claude-sonnet-4-5");
+    client.setModel("claude-sonnet-5-5");
     client.setMaxTokens(1024);
     client.setSystemPrompt("You are a helpful assistant with access to tools. Use the provided tools when appropriate.");
 

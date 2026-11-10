@@ -147,6 +147,7 @@ void OllamaManager::pullModel(const QString& modelName)
     }
 
     m_pullingModel = modelName;
+    m_pullError.clear();
 
     QJsonObject body;
     body["name"]   = modelName;
@@ -173,57 +174,79 @@ void OllamaManager::onPullReadyRead()
     if (!m_pullReply) return;
 
     // The reply is streaming NDJSON — each line is a JSON object
-    while (m_pullReply->canReadLine()) {
-        QByteArray line = m_pullReply->readLine().trimmed();
-        if (line.isEmpty()) continue;
+    while (m_pullReply && m_pullReply->canReadLine())
+        handlePullLine(m_pullReply->readLine());
+}
 
-        QJsonDocument doc = QJsonDocument::fromJson(line);
-        if (doc.isNull()) continue;
+void OllamaManager::handlePullLine(const QByteArray& rawLine)
+{
+    QByteArray line = rawLine.trimmed();
+    if (line.isEmpty()) return;
 
-        QJsonObject obj = doc.object();
-        QString status  = obj["status"].toString();
+    QJsonDocument doc = QJsonDocument::fromJson(line);
+    if (doc.isNull()) return;
 
-        int percent = -1;
-        if (obj.contains("total") && obj.contains("completed")) {
-            qint64 total     = obj["total"].toVariant().toLongLong();
-            qint64 completed = obj["completed"].toVariant().toLongLong();
-            if (total > 0)
-                percent = static_cast<int>((completed * 100) / total);
-        }
-
-        emit pullProgress(m_pullingModel, status, percent);
+    QJsonObject obj = doc.object();
+    // Ollama reports pull failures in-band with HTTP 200, e.g.
+    // {"error":"pull model manifest: file does not exist"}
+    if (obj.contains("error")) {
+        m_pullError = obj["error"].toString();
+        if (m_pullError.isEmpty())
+            m_pullError = QStringLiteral("unknown error");
+        return;
     }
+
+    QString status  = obj["status"].toString();
+
+    int percent = -1;
+    if (obj.contains("total") && obj.contains("completed")) {
+        qint64 total     = obj["total"].toVariant().toLongLong();
+        qint64 completed = obj["completed"].toVariant().toLongLong();
+        if (total > 0)
+            percent = static_cast<int>((completed * 100) / total);
+    }
+
+    emit pullProgress(m_pullingModel, status, percent);
 }
 
 void OllamaManager::onPullFinished()
 {
     if (!m_pullReply) return;
 
-    // Drain any remaining lines
+    // Drain any remaining lines, including a final one without a newline
     onPullReadyRead();
+    if (m_pullReply)
+        handlePullLine(m_pullReply->readAll());
+    if (!m_pullReply) return;
 
-    bool success = (m_pullReply->error() == QNetworkReply::NoError);
-    QString errMsg;
-    if (!success)
-        errMsg = m_pullReply->errorString();
-
-    m_pullReply->deleteLater();
-    m_pullReply = nullptr;
-
-    emit pullFinished(m_pullingModel, success, errMsg);
-    m_pullingModel.clear();
+    if (m_pullReply->error() != QNetworkReply::NoError)
+        finishPull(false, m_pullError.isEmpty() ? m_pullReply->errorString() : m_pullError);
+    else
+        finishPull(m_pullError.isEmpty(), m_pullError);
 }
 
 void OllamaManager::onPullError()
 {
-    // onPullFinished() handles cleanup; this slot is just for early error detection
-    if (m_pullReply) {
-        QString errMsg = m_pullReply->errorString();
-        emit pullFinished(m_pullingModel, false, errMsg);
-        m_pullReply->deleteLater();
-        m_pullReply = nullptr;
-        m_pullingModel.clear();
+    if (m_pullReply)
+        finishPull(false, m_pullError.isEmpty() ? m_pullReply->errorString() : m_pullError);
+}
+
+void OllamaManager::finishPull(bool success, const QString& errorMessage)
+{
+    // Detach and clear state before emitting: a pullFinished() handler may
+    // start the next pull, and the reply's later finished() must not report
+    // this pull a second time.
+    QNetworkReply* reply = m_pullReply;
+    const QString model  = m_pullingModel;
+    m_pullReply = nullptr;
+    m_pullingModel.clear();
+    m_pullError.clear();
+    if (reply) {
+        disconnect(reply, nullptr, this, nullptr);
+        reply->deleteLater();
     }
+
+    emit pullFinished(model, success, errorMessage);
 }
 
 QList<OllamaManager::ModelInfo> OllamaManager::popularModels()

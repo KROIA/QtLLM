@@ -8,6 +8,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 
 namespace QtLLM
@@ -36,42 +38,77 @@ QString PricingRegistry::normalizeModel(const QString& model)
 
 ModelPricing PricingRegistry::builtinPricing(const QString& m)
 {
-    // USD per 1M tokens; Anthropic list prices as of 2026-06. Last-resort
+    // USD per 1M tokens; Anthropic list prices as of 2026-11. Last-resort
     // fallback — fetchOnlinePricing()/setPricing() take precedence.
-    if (m.contains("fable-5")
-        || m.contains("mythos-5")) return {10.0,  50.0, -1.0, -1.0};
-    if (m.contains("opus-5"))    return { 5.0,  25.0, -1.0, -1.0};
-    if (m.contains("opus-4-8")
-        || m.contains("opus-4-7")
-        || m.contains("opus-4-6")) return { 5.0,  25.0, -1.0, -1.0};
-    if (m.contains("sonnet-5"))  return { 2.0,  10.0, -1.0, -1.0};
-    if (m.contains("haiku-4-5")) return { 1.0,   5.0, -1.0, -1.0};
-    if (m.contains("opus-4"))    return {15.0,  75.0, -1.0, -1.0};
-    if (m.contains("sonnet-4"))  return { 3.0,  15.0, -1.0, -1.0};
-    if (m.contains("haiku-4"))   return { 0.80,  4.0, -1.0, -1.0};
-    if (m.contains("opus-3"))    return {15.0,  75.0, -1.0, -1.0};
-    if (m.contains("sonnet-3"))  return { 3.0,  15.0, -1.0, -1.0};
-    if (m.contains("haiku-3"))   return { 0.25,  1.25, -1.0, -1.0};
+    struct Entry { const char* pattern; ModelPricing pricing; };
+    // Substring patterns, most specific first: "opus-5-5" also contains
+    // "opus-5", so the first hit must be the longest applicable pattern.
+    static const Entry kTable[] = {
+        {"fable-5-2",  { 8.0,  40.0,  0.20, -1.0}},
+        {"mythos-5-2", { 8.0,  40.0,  0.20, -1.0}},
+        {"fable-5-1",  {10.0,  50.0,  0.25, -1.0}},
+        {"mythos-5-1", {10.0,  50.0,  0.25, -1.0}},
+        {"fable-5",    {10.0,  50.0, -1.0,  -1.0}},
+        {"mythos-5",   {10.0,  50.0, -1.0,  -1.0}},
+        {"opus-5-5",   { 4.0,  20.0,  0.20, -1.0}},
+        {"opus-5",     { 5.0,  25.0, -1.0,  -1.0}},
+        {"opus-4-8",   { 5.0,  25.0, -1.0,  -1.0}},
+        {"opus-4-7",   { 5.0,  25.0, -1.0,  -1.0}},
+        {"opus-4-6",   { 5.0,  25.0, -1.0,  -1.0}},
+        {"opus-4-5",   { 5.0,  25.0, -1.0,  -1.0}},
+        {"sonnet-5-5", { 2.0,  10.0,  0.10, -1.0}},
+        {"sonnet-5",   { 2.0,  10.0, -1.0,  -1.0}},
+        {"sonnet-4-6", { 3.0,  15.0, -1.0,  -1.0}},
+        {"sonnet-4-5", { 3.0,  15.0, -1.0,  -1.0}},
+        {"haiku-5-5",  { 0.10,  0.50, -1.0, -1.0}},
+        {"haiku-4-5",  { 1.0,   5.0, -1.0,  -1.0}},
+        {"opus-4",     {15.0,  75.0, -1.0,  -1.0}},
+        {"sonnet-4",   { 3.0,  15.0, -1.0,  -1.0}},
+        {"haiku-4",    { 0.80,  4.0, -1.0,  -1.0}},
+        {"opus-3",     {15.0,  75.0, -1.0,  -1.0}},
+        {"sonnet-3",   { 3.0,  15.0, -1.0,  -1.0}},
+        {"haiku-3",    { 0.25,  1.25, -1.0, -1.0}},
+    };
+    for (const Entry& e : kTable) {
+        if (m.contains(QLatin1String(e.pattern)))
+            return e.pricing;
+    }
     return {};
 }
 
+// True when the longer id is the shorter one plus a release tag (date or
+// "latest"), e.g. "claude-x-4-5" vs "claude-x-4-5-20251101" or "...@20251101".
+// A version step like "claude-x-5" vs "claude-x-5-5" is a different model.
+static bool sameModelModuloDate(const QString& a, const QString& b)
+{
+    const QString& shorter = a.size() <= b.size() ? a : b;
+    const QString& longer  = a.size() <= b.size() ? b : a;
+    if (shorter.isEmpty() || !longer.startsWith(shorter))
+        return false;
+    static const QRegularExpression kTag(
+        QStringLiteral("^[-@](\\d{8}|latest)([-@:].*)?$"));
+    return kTag.match(longer.mid(shorter.size())).hasMatch();
+}
+
 ModelPricing PricingRegistry::lookup(const QMap<QString, ModelPricing>& table,
-                                     const QString& normalizedModel)
+                                     const QString& normalizedModel,
+                                     bool substringPatterns)
 {
     // Exact match first
     auto it = table.constFind(normalizedModel);
     if (it != table.constEnd())
         return it.value();
 
-    // Longest pattern that matches as substring (either direction — LiteLLM
-    // keys often carry date suffixes the app's model id omits, or vice versa)
+    // Longest key that is the same model up to a date suffix (either
+    // direction). Injected entries additionally match as substring patterns.
     ModelPricing best;
     int bestLength = 0;
     for (auto entry = table.constBegin(); entry != table.constEnd(); ++entry) {
         const QString& key = entry.key();
         if (key.size() <= bestLength)
             continue;
-        if (normalizedModel.contains(key) || key.contains(normalizedModel)) {
+        if (sameModelModuloDate(normalizedModel, key)
+            || (substringPatterns && !key.isEmpty() && normalizedModel.contains(key))) {
             best = entry.value();
             bestLength = key.size();
         }
@@ -88,12 +125,14 @@ ModelPricing PricingRegistry::pricingFor(const QString& model) const
     }
 
     const QString norm = normalizeModel(model);
+    if (norm.isEmpty())
+        return {};
 
-    ModelPricing p = lookup(m_userTable, norm);
+    ModelPricing p = lookup(m_userTable, norm, true);
     if (p.isValid())
         return p;
 
-    p = lookup(m_loadedTable, norm);
+    p = lookup(m_loadedTable, norm, false);
     if (p.isValid())
         return p;
 
@@ -135,6 +174,10 @@ void PricingRegistry::clearCustomPricing()
 int PricingRegistry::loadLiteLlmJson(const QJsonObject& root)
 {
     int loaded = 0;
+    // Resellers (vertex_ai/, bedrock/, openrouter/...) normalise to the same
+    // key as the first-party entry but may carry different prices; the
+    // first-party price must win regardless of key order.
+    QSet<QString> firstPartyKeys;
     for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
         if (!it.value().isObject())
             continue;
@@ -155,7 +198,17 @@ int PricingRegistry::loadLiteLlmJson(const QJsonObject& root)
 
         if (!p.isValid())
             continue;   // free/local models — keep fallthrough to 0-cost
-        m_loadedTable.insert(normalizeModel(it.key()), p);
+        const QString key = normalizeModel(it.key());
+        if (key.isEmpty())
+            continue;
+        const QString rawKey = it.key().toLower();
+        const bool firstParty = !rawKey.contains('/')
+                                || rawKey.startsWith(QLatin1String("anthropic/"));
+        if (firstParty)
+            firstPartyKeys.insert(key);
+        else if (firstPartyKeys.contains(key))
+            continue;
+        m_loadedTable.insert(key, p);
         ++loaded;
     }
     if (loaded > 0)

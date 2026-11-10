@@ -49,7 +49,7 @@ Tool/function calling, streaming-free async design, and a Qt-idiomatic signals-a
 // Claude
 QtLLM::Client client(qgetenv("ANTHROPIC_API_KEY"),
                      "https://api.anthropic.com/v1/messages");
-client.setModel("claude-sonnet-4-5");
+client.setModel("claude-sonnet-5-5");
 
 // or Ollama (local)
 QtLLM::Client client(QtLLM::Provider::Ollama,

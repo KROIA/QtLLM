@@ -1,14 +1,15 @@
 #include <iostream>
-#include <QCoreApplication>
+#include <QApplication>
 #include "QtLLM.h"
 #include "tests.h"
 
 
 int main(int argc, char* argv[])
 {
-	// QCoreApplication installs an event dispatcher on the main thread,
-	// which is required by QNetworkAccessManager (used internally by Client).
-	QCoreApplication app(argc, argv);
+	// QApplication: an event dispatcher for QNetworkAccessManager (used
+	// internally by Client), and a GUI stack for the tests in which a real
+	// model operates real widgets.
+	QApplication app(argc, argv);
 
 	QtLLM::LibraryInfo::printInfo();
 

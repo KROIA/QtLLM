@@ -28,5 +28,10 @@
 #include "BuiltinTools.h"
 #include "SettingsDialog.h"
 #include "AgentsWidget.h"
+#include "AppInterface.h"
+#include "AppKnowledge.h"
+#include "ToolSettingsWidget.h"
+#include "GuideOverlay.h"
+#include "SpeechBubble.h"
 
 /// USER_SECTION_END

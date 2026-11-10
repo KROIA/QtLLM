@@ -110,8 +110,9 @@ QtLLM::BuiltinTools::registerTools(&client,
 | `CurrentDateTime` | `current_datetime` | Local + UTC time, timezone, weekday |
 | `SystemInfo` | `system_info` | OS, Qt version, locale, app name, screen size |
 | `OpenUrl` | `open_url` | Open URL in the default browser |
+| `Wait` | `wait` | Pause for `seconds` (0.1 to 300), then continue. Asynchronous: the application stays responsive and Cancel ends it |
 | `ListDirectory` | `list_directory` | Directory listing (max 500 entries) — consent-gated |
-| `ReadTextFile` | `read_text_file` | Read UTF-8 text file, size-capped (default 64 KiB) — consent-gated |
+| `ReadTextFile` | `read_text_file` | Read UTF-8 text file, 16 KiB per call by default, `offset` / `nextOffset` for paging — consent-gated |
 | `WriteTextFile` | `write_text_file` | Write/append UTF-8 text file — consent-gated |
 | `RepeatingTask` | `start_repeating_task`, `cancel_repeating_task`, `list_repeating_tasks` | Periodic message into the chat/status line — local only, **no tokens** |
 
