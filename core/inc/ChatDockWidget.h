@@ -108,9 +108,11 @@ namespace QtLLM
         void attachImages(const QList<QImage>& images);
 
         // "Regenerate" (ask the last prompt again) and "Edit" (take the last
-        // prompt back into the input field). Both remove the last exchange
-        // from the conversation first (Client::removeLastExchange). Needs
-        // setClient().
+        // prompt back into the input field). Regenerate removes the last
+        // exchange from the conversation first (Client::removeLastExchange).
+        // Edit only hides it: it is removed when the changed message is sent,
+        // and comes back when the button is clicked again or Esc is pressed
+        // in the input field. Needs setClient().
         void setRegenerateEnabled(bool enabled);
         bool regenerateEnabled() const { return m_regenerate; }
 
@@ -179,6 +181,9 @@ namespace QtLLM
         // Removes the bubbles of the last exchange; false when there is none.
         bool removeLastExchangeBubbles();
         QString takeLastExchange();
+        // Ends an edit of the last message without sending: its bubbles are
+        // shown again. False when no edit was going on.
+        bool cancelEditLast();
 
         QWidget*     m_attachRow = nullptr;
         QPushButton* m_attachButton = nullptr;
@@ -189,6 +194,8 @@ namespace QtLLM
         QList<QPointer<QWidget>> m_userBubbles;   // in order; for regenerate / edit
         bool m_imageInput = false;
         bool m_regenerate = false;
+        bool m_editingLast = false;
+        QList<QPointer<QWidget>> m_editHidden;    // bubbles hidden while editing
 
         QWidget* m_centralWidget = nullptr;
         QVBoxLayout* m_messagesLayout = nullptr;
