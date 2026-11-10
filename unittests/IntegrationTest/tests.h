@@ -5,3 +5,4 @@
 #include "tests/TST_OllamaIntegration.h"
 #include "tests/TST_ClaudeCodeIntegration.h"
 #include "tests/TST_AppInterfaceIntegration.h"
+#include "tests/TST_OAuth2Integration.h"

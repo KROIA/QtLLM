@@ -89,6 +89,9 @@ Agent::Agent(const AgentConfig& config, QObject* parent)
 
     setUsageAppTag(QStringLiteral("agent:") + m_config.name);
 
+    if (m_config.accessTokenProvider)
+        setAccessTokenProvider(m_config.accessTokenProvider);
+
     if (!m_config.model.isEmpty())
         setModel(m_config.model);
     if (m_config.maxTokens > 0)

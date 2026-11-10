@@ -23,6 +23,7 @@ struct FakeApi
 {
     QQueue<QByteArray> replies;
     QList<QByteArray>  messageBodies;   // request bodies received, in order
+    QList<QByteArray>  messageHeads;    // their request lines + headers, lower-cased
     QHash<QTcpSocket*, QByteArray> buffers;
     bool               silent = false;
     // Send a reply in two pieces, cut in the middle - as a network would.
@@ -144,6 +145,7 @@ private:
         if (requestLine.startsWith("POST") && requestLine.contains("/messages ")) {
             ++messageRequests;
             messageBodies.append(requestBody);
+            messageHeads.append(head);
             if (silent)
                 return;
             if (!replies.isEmpty())

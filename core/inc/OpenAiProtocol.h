@@ -32,6 +32,8 @@ public:
     void setMaxTokens(int maxTokens) override;
     void setSystemPrompt(const QString& systemPrompt) override;
     void setApiKey(const QString& apiKey);
+    // When set, the bearer token comes from the provider instead of apiKey.
+    void setAccessTokenProvider(AccessTokenProvider provider);
     void setUrl(const QString& url);
     QString baseUrl() const { return m_baseUrl; }
     void setTools(const QList<QJsonObject>& toolSchemas,
@@ -102,6 +104,7 @@ private:
 
     QString                    m_baseUrl;
     QString                    m_apiKey;
+    AccessTokenProvider        m_accessTokenProvider;
     QString                    m_model;
     int                        m_maxTokens;
     QString                    m_systemPrompt;

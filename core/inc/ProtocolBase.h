@@ -14,6 +14,13 @@ namespace QtLLM {
 // Callable invoked synchronously on the Qt thread; return value is sent back to the LLM as the tool result.
 using ToolHandler = std::function<QJsonObject(const QJsonObject&)>;
 
+// Supplies the bearer token for a gateway that authenticates users instead of
+// API keys (an OAuth2 proxy in front of the API, see OAuth2Session). Called
+// right before every request; the token goes out as "Authorization: Bearer
+// <token>" in place of the API key. An empty result means "not signed in" and
+// fails the request without sending it.
+using AccessTokenProvider = std::function<QString()>;
+
 // How much the model should think before answering - the main cost lever on
 // current models. Default leaves it to the model.
 enum class Effort { Default, Low, Medium, High, XHigh, Max };

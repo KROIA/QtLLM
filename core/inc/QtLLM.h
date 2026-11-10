@@ -19,6 +19,7 @@
 #include "Tool.h"
 #include "ToolResult.h"
 #include "Client.h"
+#include "OAuth2Session.h"
 #include "Agent.h"
 #include "AgentRegistry.h"
 #include "OllamaManager.h"

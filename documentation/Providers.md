@@ -32,6 +32,12 @@ The default URL (`https://api.anthropic.com/v1/messages`) is pre-filled when omi
 
 The API key is sent as the `x-api-key` header. Store it in an environment variable — never hard-code it in source.
 
+For a gateway where users sign in instead (an OAuth2 proxy in front of the API
+or of a LiteLLM instance), pass no API key and give the client the user's token:
+`client.setAccessTokenProvider(session->accessTokenProvider())`. The request then
+carries `Authorization: Bearer <token>` and no `x-api-key`. See
+[OAuth2Session](API.md#qtllmoauth2session).
+
 ### Current models (as of November 2026)
 
 | Model ID | Context | Price in / out per 1M | Notes |

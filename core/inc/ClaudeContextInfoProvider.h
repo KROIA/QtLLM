@@ -1,6 +1,7 @@
 #pragma once
 #include "QtLLM_base.h"
 #include "ContextInfoProvider.h"
+#include "ProtocolBase.h"
 #include <QUrl>
 
 namespace QtLLM
@@ -25,6 +26,8 @@ namespace QtLLM
         // Settings-dialog key/endpoint change also applies to count_tokens.
         void setApiKey(const QString& apiKey) { m_apiKey = apiKey; }
         void setMessagesUrl(const QUrl& url) { m_messagesUrl = url; }
+        // Bearer token instead of the API key - see ClaudeProtocol.
+        void setAccessTokenProvider(AccessTokenProvider provider) { m_accessTokenProvider = std::move(provider); }
 
         void fetchContextWindowTokens(const QString& model) override;
         void countTokens(const QString& model,
@@ -39,7 +42,11 @@ namespace QtLLM
         void onModelTransportError(const QString& message);
 
     private:
+        // Credential header for the next request; empty name when none.
+        QPair<QByteArray, QByteArray> authHeader() const;
+
         QString        m_apiKey;
+        AccessTokenProvider m_accessTokenProvider;
         QUrl           m_messagesUrl;
         HttpTransport* m_countTransport;
         HttpTransport* m_modelTransport;
