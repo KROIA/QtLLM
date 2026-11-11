@@ -20,13 +20,14 @@ Tool/function calling, streamed answers (on by default), and a Qt-idiomatic sign
 - Tool/function calling with automatic multi-turn loop handling
 - Built-in tools, individually opt-in (`BuiltinTools`): user interview forms in the chat, file dialogs, message boxes, color picker, clipboard, date/time, filesystem access (consent-gated), repeating tasks, and more
 - Tool safety rails: input validation, per-turn call cap, consent hook, enable/disable without re-registration
+- Application interface (`AppInterface`, opt-in per capability): the model reads and operates the application's UI and explains it with speech bubbles and guided tours
 - Ready-made widgets: chat dock (Markdown bubbles, inline interview cards, color swatches), settings dialog with tool manager and usage charts
 - Providers `Claude`, `ClaudeCode`, `Ollama` and `OpenAI`, switchable at run time with `Client::setProvider()`
 - Usage statistics, persistent usage history, and cost estimation per turn
 - User sign-in instead of API keys (`OAuth2Session`): OAuth2 / OpenID Connect Authorization Code flow with PKCE in the system browser, background token refresh, optional encrypted token store; requests carry the user's bearer token for a gateway behind an OAuth2 proxy
 - Ollama: auto-start server, model discovery, and one-click model downloads
 - Builds as shared and static library
-- Scripting: the model writes one script instead of many tool calls (optional, `QTLLM_SCRIPTING`)
+- Scripting: the model writes one script instead of many tool calls; scripts can also draw and animate over the window, react to keys and the mouse, and read, change or build widgets (optional, `QTLLM_SCRIPTING`, with [ScriptHost](https://github.com/KROIA/ScriptHost) 2.3)
 - Builds with Qt 5.15 (default) and Qt 6 (verified with Qt 6.11). Needs the OpenSSL run-time DLLs for https, which the build copies next to the programs; with the default `QTLLM_SCRIPTING=ON` also the [ScriptHost](https://github.com/KROIA/ScriptHost) library and the Qt module Qml (see [Building.md](documentation/Building.md#options))
 
 ---

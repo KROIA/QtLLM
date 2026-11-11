@@ -225,7 +225,7 @@ private:
 
         QtLLM::AppInterface ui(&client, &window);
         using Cap = QtLLM::AppInterface::Capability;
-        ui.setCapabilities(Cap::ReadWidgets | Cap::Highlights | Cap::SpeechBubbles);
+        ui.setCapabilities(Cap::ReadWidgets | Cap::SpeechBubbles);
 
         QStringList called;
         QObject::connect(&client, &QtLLM::Client::toolInvoked,
@@ -235,25 +235,10 @@ private:
         };
 
         QString error;
-        const QString first = ask(client, "Draw a border around the Export button.", error);
+        const QString answer = ask(client,
+            "Attach a speech bubble to the Print button that says what it does.", error);
         TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
-        std::cout << "  Response 1: " << first.toStdString() << "\n";
-        std::cout << "  Tools used: " << called.join(", ").toStdString() << "\n";
-
-        QtLLM::GuideOverlay* overlay = QtLLM::GuideOverlay::forWindow(&window);
-        TEST_ASSERT_M(called.contains("ui_highlight_widget"), "Expected the model to call ui_highlight_widget");
-        TEST_COMPARE(overlay->itemIds().size(), 1);
-        if (overlay->itemIds().size() == 1) {
-            const QRect drawn = overlay->itemRect(overlay->itemIds().first());
-            TEST_ASSERT(drawn.contains(inWindow(exportButton)));       // the right widget
-            TEST_ASSERT(!drawn.intersects(inWindow(save)));
-        }
-
-        called.clear();
-        const QString second = ask(client,
-            "Now attach a speech bubble to the Print button that says what it does.", error);
-        TEST_ASSERT_M(error.isEmpty(), ("error: " + error).toStdString().c_str());
-        std::cout << "  Response 2: " << second.toStdString() << "\n";
+        std::cout << "  Response: " << answer.toStdString() << "\n";
         std::cout << "  Tools used: " << called.join(", ").toStdString() << "\n";
 
         QtLLM::BubbleManager* bubbles = QtLLM::BubbleManager::forWindow(&window);

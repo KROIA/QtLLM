@@ -1,7 +1,6 @@
 #pragma once
 
-// Guidance tools of AppInterface: highlights, shapes, speech bubbles and
-// tours as the model calls them, behind their capability switches.
+// Guidance tools of AppInterface: speech bubbles and tours as the model calls them, behind their capability switches.
 #ifdef UNITTEST_GUI_ENABLED
 
 #include "UnitTest.h"
@@ -22,9 +21,6 @@ public:
         : Test("TST_AppGuidance")
     {
         ADD_TEST(TST_AppGuidance::testToolsFollowCapabilities);
-        ADD_TEST(TST_AppGuidance::testHighlightTool);
-        ADD_TEST(TST_AppGuidance::testAnimationNeedsItsSwitch);
-        ADD_TEST(TST_AppGuidance::testDrawShapeTool);
         ADD_TEST(TST_AppGuidance::testBubbleAndTourTools);
         ADD_TEST(TST_AppGuidance::testClearGuidance);
     }
@@ -87,24 +83,16 @@ private:
             QtLLM::AppInterface ui(&f.client, &f.window);
             TEST_ASSERT(uiTools(f.client).isEmpty());             // everything off by default
 
-            ui.setCapabilityEnabled(Cap::Highlights, true);
-            TEST_COMPARE(uiTools(f.client), (QStringList{"ui_clear_overlays", "ui_highlight_widget",
-                                                         "ui_list_guidance", "ui_remove_overlay"}));
-
             ui.setCapabilityEnabled(Cap::SpeechBubbles, true);
-            TEST_ASSERT(uiTools(f.client).contains("ui_show_bubble"));
-            TEST_ASSERT(uiTools(f.client).contains("ui_close_bubble"));
-            TEST_ASSERT(!uiTools(f.client).contains("ui_show_tour"));
-            TEST_ASSERT(!uiTools(f.client).contains("ui_draw_shape"));
+            TEST_COMPARE(uiTools(f.client), (QStringList{"ui_clear_bubbles", "ui_close_bubble",
+                                                         "ui_list_guidance", "ui_show_bubble"}));
 
             ui.setCapabilityEnabled(Cap::Tours, true);
-            ui.setCapabilityEnabled(Cap::Shapes, true);
             TEST_ASSERT(uiTools(f.client).contains("ui_show_tour"));
-            TEST_ASSERT(uiTools(f.client).contains("ui_draw_shape"));
 
-            ui.setCapabilityEnabled(Cap::Highlights, false);
-            TEST_ASSERT(!uiTools(f.client).contains("ui_highlight_widget"));
-            TEST_ASSERT(uiTools(f.client).contains("ui_remove_overlay"));   // still needed for shapes
+            ui.setCapabilityEnabled(Cap::SpeechBubbles, false);
+            TEST_ASSERT(!uiTools(f.client).contains("ui_show_bubble"));
+            TEST_ASSERT(uiTools(f.client).contains("ui_close_bubble"));     // still needed for tours
 
             // They draw on top of the application and change nothing in it.
             for (const QtLLM::Tool& tool : f.client.registeredTools()) {
@@ -115,109 +103,6 @@ private:
             }
         }
         TEST_ASSERT(uiTools(f.client).isEmpty());                 // gone with the interface
-    }
-
-    TEST_FUNCTION(testHighlightTool)
-    {
-        TEST_START;
-        if (!UnitTest::Gui::isAvailable()) { TEST_MESSAGE("Skipping: no GUI session"); return; }
-
-        Fixture f;
-        TEST_ASSERT(UnitTest::Gui::showAndWait(&f.window));
-        QtLLM::AppInterface ui(&f.client, &f.window);
-        ui.setCapabilityEnabled(Cap::Highlights, true);
-        QtLLM::GuideOverlay* overlay = QtLLM::GuideOverlay::forWindow(&f.window);
-
-        const QJsonObject result = ui.highlightWidget({{"id", ui.idForWidget(f.beta)}, {"color", "#00ff00"}});
-        TEST_ASSERT(ok(result));
-        const QString id = result["overlay"].toString();
-        TEST_ASSERT(!id.isEmpty());
-        TEST_COMPARE(overlay->itemIds(), QStringList{id});
-        TEST_ASSERT(overlay->itemRect(id).contains(f.inWindow(f.beta)));
-        TEST_ASSERT(!overlay->itemRect(id).intersects(f.inWindow(f.alpha)));
-        TEST_COMPARE(overlay->item(id).stroke, QColor("#00ff00"));
-
-        TEST_ASSERT(ui.listGuidance({})["overlays"].toArray().contains(id));
-
-        TEST_ASSERT(ok(ui.removeOverlay({{"id", id}})));
-        TEST_ASSERT(overlay->itemIds().isEmpty());
-        TEST_ASSERT(!ok(ui.removeOverlay({{"id", id}})));                    // already gone
-        TEST_ASSERT(!ok(ui.highlightWidget({{"id", "no/such/widget"}})));
-        TEST_ASSERT(!ok(ui.highlightWidget({{"id", ui.idForWidget(f.beta)}, {"color", "not-a-colour"}})));
-        TEST_ASSERT(overlay->itemIds().isEmpty());
-    }
-
-    // Animations have their own switch: off, the parameter is not offered and
-    // one sent anyway is ignored.
-    TEST_FUNCTION(testAnimationNeedsItsSwitch)
-    {
-        TEST_START;
-        if (!UnitTest::Gui::isAvailable()) { TEST_MESSAGE("Skipping: no GUI session"); return; }
-
-        Fixture f;
-        TEST_ASSERT(UnitTest::Gui::showAndWait(&f.window));
-        QtLLM::AppInterface ui(&f.client, &f.window);
-        ui.setCapabilityEnabled(Cap::Highlights, true);
-        QtLLM::GuideOverlay* overlay = QtLLM::GuideOverlay::forWindow(&f.window);
-
-        auto offersAnimation = [&]() {
-            for (const QtLLM::Tool& tool : f.client.registeredTools()) {
-                if (tool.name() == "ui_highlight_widget")
-                    return tool.parameterSchema()["properties"].toObject().contains("animation");
-            }
-            return false;
-        };
-        const QJsonObject args{{"id", ui.idForWidget(f.alpha)},
-                               {"animation", QJsonObject{{"type", "blink"}, {"periodMs", 500}}}};
-
-        TEST_ASSERT(!offersAnimation());
-        QString id = ui.highlightWidget(args)["overlay"].toString();
-        TEST_ASSERT(!id.isEmpty());
-        TEST_ASSERT(overlay->item(id).animation.type == QtLLM::OverlayAnimation::Type::None);
-        overlay->clear();
-
-        ui.setCapabilityEnabled(Cap::Animations, true);
-        TEST_ASSERT(offersAnimation());
-        id = ui.highlightWidget(args)["overlay"].toString();
-        TEST_ASSERT(!id.isEmpty());
-        TEST_ASSERT(overlay->item(id).animation.type == QtLLM::OverlayAnimation::Type::Blink);
-        TEST_COMPARE(overlay->item(id).animation.periodMs, 500);
-    }
-
-    TEST_FUNCTION(testDrawShapeTool)
-    {
-        TEST_START;
-        if (!UnitTest::Gui::isAvailable()) { TEST_MESSAGE("Skipping: no GUI session"); return; }
-
-        Fixture f;
-        TEST_ASSERT(UnitTest::Gui::showAndWait(&f.window));
-        QtLLM::AppInterface ui(&f.client, &f.window);
-        ui.setCapabilityEnabled(Cap::Shapes, true);
-        QtLLM::GuideOverlay* overlay = QtLLM::GuideOverlay::forWindow(&f.window);
-
-        // A frame by coordinates.
-        const QJsonObject frame = ui.drawShape({{"shape", "rect"},
-            {"rect", QJsonObject{{"x", 200}, {"y", 100}, {"width", 150}, {"height", 80}}}});
-        TEST_ASSERT(ok(frame));
-        TEST_ASSERT(overlay->itemRect(frame["overlay"].toString()).contains(QRect(200, 100, 150, 80)));
-
-        // An arrow from a point to a widget.
-        const QJsonObject arrow = ui.drawShape({{"shape", "arrow"},
-            {"from", QJsonObject{{"x", 400}, {"y", 300}}}, {"target", ui.idForWidget(f.gamma)}});
-        TEST_ASSERT(ok(arrow));
-        TEST_ASSERT(overlay->item(arrow["overlay"].toString()).shape == QtLLM::OverlayItem::Shape::Arrow);
-
-        // A spotlight on a widget.
-        TEST_ASSERT(ok(ui.drawShape({{"shape", "spotlight"}, {"target", ui.idForWidget(f.alpha)}})));
-        TEST_COMPARE(overlay->itemIds().size(), 3);
-
-        TEST_ASSERT(!ok(ui.drawShape({{"shape", "hexagon"}, {"target", ui.idForWidget(f.alpha)}})));
-        TEST_ASSERT(!ok(ui.drawShape({{"shape", "rect"}})));                 // nowhere to draw it
-        TEST_ASSERT(!ok(ui.drawShape({{"shape", "rect"}, {"target", "gone"}})));
-        TEST_COMPARE(overlay->itemIds().size(), 3);
-
-        TEST_COMPARE(ui.clearOverlays({})["removed"].toInt(), 3);
-        TEST_ASSERT(overlay->itemIds().isEmpty());
     }
 
     TEST_FUNCTION(testBubbleAndTourTools)
@@ -287,21 +172,19 @@ private:
         Fixture f;
         TEST_ASSERT(UnitTest::Gui::showAndWait(&f.window));
         QtLLM::AppInterface ui(&f.client, &f.window);
-        ui.setCapabilities(Cap::Highlights | Cap::SpeechBubbles | Cap::Tours);
+        ui.setCapabilities(Cap::SpeechBubbles | Cap::Tours);
 
-        TEST_ASSERT(ok(ui.highlightWidget({{"id", ui.idForWidget(f.alpha)}})));
         TEST_ASSERT(ok(ui.showBubble({{"target", ui.idForWidget(f.beta)}, {"text", "x"}})));
         TEST_ASSERT(ok(ui.showTour({{"mode", "one_at_a_time"}, {"steps", QJsonArray{
             QJsonObject{{"target", ui.idForWidget(f.alpha)}, {"text", "a"}},
             QJsonObject{{"target", ui.idForWidget(f.gamma)}, {"text", "b"}}}}})));
-        TEST_ASSERT(!QtLLM::GuideOverlay::forWindow(&f.window)->itemIds().isEmpty());
+        TEST_ASSERT(!QtLLM::GuideOverlay::forWindow(&f.window)->itemIds().isEmpty());  // the step's highlight
         TEST_ASSERT(!QtLLM::BubbleManager::forWindow(&f.window)->bubbleIds().isEmpty());
 
         ui.clearGuidance();
         TEST_ASSERT(QtLLM::GuideOverlay::forWindow(&f.window)->itemIds().isEmpty());
         TEST_ASSERT(QtLLM::BubbleManager::forWindow(&f.window)->bubbleIds().isEmpty());
-        const QJsonObject listed = ui.listGuidance({});
-        TEST_ASSERT(listed["overlays"].toArray().isEmpty());
+        TEST_ASSERT(ui.listGuidance({})["bubbles"].toArray().isEmpty());
     }
 };
 

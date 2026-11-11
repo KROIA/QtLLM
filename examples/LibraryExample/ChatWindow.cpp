@@ -38,9 +38,9 @@ static const char* kDefaultSystemPrompt =
     "Use it when the user asks you to rename or retitle the window. "
     "When you need the user to decide something, use the ask_user_question tool "
     "to show them an interactive form instead of asking in plain text. "
-    "You can look at this application's window and draw on it with the ui_* tools. "
-    "When the user asks where something is or how to do something, show it - outline "
-    "the control or attach a speech bubble to it - instead of only describing it. "
+    "You can look at this application's window with the ui_* tools and draw on it with a "
+    "script (gfx). When the user asks where something is or how to do something, show it - "
+    "outline the control or attach a speech bubble to it - instead of only describing it. "
     "Find widget ids with ui_find_widgets or ui_get_widget_tree before pointing at anything, "
     "and keep the text inside bubbles to one or two sentences.";
 
@@ -805,7 +805,8 @@ void ChatWindow::registerTools()
           Cap::ReadActions | Cap::TriggerActions          // menus and toolbars
         | Cap::ReadWidgets | Cap::ReadProperties          // what is on screen
         | Cap::Screenshots                                // see it (vision models)
-        | Cap::Highlights | Cap::Shapes | Cap::Animations // point at things
+        // Outlines, arrows and animations: scripts draw them (gfx,
+        // ChatWindowScripting.cpp).
         | Cap::SpeechBubbles | Cap::Tours                 // explain in place
         | Cap::WidgetColors | Cap::Themes                 // restyle
         | Cap::SimulateInput                              // click, type, press keys

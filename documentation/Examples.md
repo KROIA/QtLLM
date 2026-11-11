@@ -14,6 +14,8 @@ A full Qt Widgets GUI chat application with:
 - Live usage statistics panel (tokens per turn, session totals, estimated cost)
 - Ollama model selector with one-click download
 - A registered `setWindowTitle` tool the LLM can invoke to rename the window
+- `AppInterface`: the model reads the window, clicks and types, edits lists and tables, recolours widgets, switches themes and explains with speech bubbles and guided tours
+- **Settings…** opens the `SettingsDialog` beside the window: **Apply** keeps it open, **Apply and close** closes it
 
 ### Running with Claude
 
@@ -47,9 +49,10 @@ Build and run. The application will:
 
 - **Methods:** the window's inventory table is the object `inventory` with `list`, `get` (read-only), `setQuantity`, `setLocation`, `add` and `remove`. `inventory.remove` is switched off and locked against the user. The tool `setWindowTitle` is exposed as `tools.setWindowTitle`, and `llm.ask` / `llm.choose` run on the chat's provider with `Effort::Low`.
 - **Approval:** `Approval::ChangingScripts`; the user can change it in the Scripts window.
+- **The window:** scripts get its keys and clicks (`forwardInput`), draw over it with `gfx` (`attachCanvas`) - this is how the model outlines, points at and animates things - and read and change its widgets with `ui.*` (`exposeWidgets`). The chat dock is hidden from `ui.*`.
 - **Saved scripts:** "Restock low items" and "Inventory report" are shipped as read-only scripts; the user's own go to `scripts/` in the application data folder.
 - **Scripts window:** the toolbar action **Scripts…** opens a `QtLLM::ScriptsWidget` in a window of its own, applying changes at once. The user's choices are kept in `QSettings`.
-- **Demo buttons:** the **Scripts** section of the "Assistant Demos" panel sends ready-made prompts to the chat: a loop over the inventory, a dry run first, a saved script, and a script that asks the model per item.
+- **Demo buttons:** "Point at things" asks for outlines, arrows and a spotlight, which the model now draws with a script; the **Scripts** section of the "Assistant Demos" panel sends ready-made prompts to the chat: a loop over the inventory, a dry run first, a saved script, and a script that asks the model per item.
 
 ### Key source files
 

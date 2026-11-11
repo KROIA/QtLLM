@@ -187,7 +187,7 @@ private:
             // guidance flags are covered by TST_AppGuidance.)
             ui.setCapabilities(Cap::ReadActions | Cap::Screenshots);
             TEST_COMPARE(uiTools(client), QStringList({"ui_list_actions", "ui_screenshot"}));
-            TEST_ASSERT(!ui.isCapabilityEnabled(Cap::Highlights));
+            TEST_ASSERT(!ui.isCapabilityEnabled(Cap::SpeechBubbles));
             TEST_ASSERT(!ui.isCapabilityEnabled(Cap::ModifyLayouts));
 
             ui.setCapabilities(Cap::ReadActions | Cap::TriggerActions | Cap::ReadWidgets

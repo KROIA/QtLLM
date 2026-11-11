@@ -319,12 +319,12 @@ bool isItemCapability(Capability capability)
         || capability == Capability::EditItems;
 }
 
-// Highlights ... Tours share tools, so they are registered as a set
+// SpeechBubbles and Tours share tools, so they are registered as a set
 // (syncGuidanceTools) instead of one capability at a time.
 bool isGuidanceCapability(AppInterface::Capability capability)
 {
-    return static_cast<int>(capability) >= static_cast<int>(AppInterface::Capability::Highlights)
-        && static_cast<int>(capability) <= static_cast<int>(AppInterface::Capability::Tours);
+    return capability == AppInterface::Capability::SpeechBubbles
+        || capability == AppInterface::Capability::Tours;
 }
 
 } // namespace

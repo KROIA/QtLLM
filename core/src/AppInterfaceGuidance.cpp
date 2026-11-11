@@ -1,7 +1,6 @@
-// Guidance tools of AppInterface: the model points at things for the user -
-// highlights, shapes, speech bubbles, guided tours. The drawing itself lives in
-// GuideOverlay and SpeechBubble; this file only turns tool calls into calls on
-// those classes, behind the capability switches.
+// Guidance tools of AppInterface: the model explains things in place - speech
+// bubbles and guided tours. The drawing itself lives in SpeechBubble; this file
+// only turns tool calls into calls on it, behind the capability switches.
 #include "AppInterface.h"
 #include "Client.h"
 #include "GuideOverlay.h"
@@ -29,29 +28,6 @@ QJsonObject pointSchema(const char* description)
         {"required", QJsonArray{"x", "y"}}};
 }
 
-QJsonObject animationSchema()
-{
-    return QJsonObject{
-        {"type", "object"},
-        {"description",
-         "Optional animation. blink: switches on and off; fade: fades in (fadeOut also fades out "
-         "at the end); pulse: the outline breathes; colorLoop: cycles through 'colors'; "
-         "marchingAnts: a moving dashed outline; drawOn: a line or arrow grows from start to end. "
-         "Use sparingly - one animated item draws the eye, several are noise."},
-        {"properties", QJsonObject{
-            {"type", QJsonObject{{"type", "string"},
-                                 {"enum", QJsonArray{"blink", "fade", "pulse", "colorLoop",
-                                                     "marchingAnts", "drawOn"}}}},
-            {"periodMs", QJsonObject{{"type", "integer"},
-                                     {"description", "Length of one cycle in milliseconds (default 1000)."}}},
-            {"count", QJsonObject{{"type", "integer"},
-                                  {"description", "Number of cycles; 0 (default) repeats until removed."}}},
-            {"colors", QJsonObject{{"type", "array"}, {"items", QJsonObject{{"type", "string"}}},
-                                   {"description", "Colours for colorLoop, e.g. [\"#ff8800\", \"#0088ff\"]."}}},
-            {"fadeOut", QJsonObject{{"type", "boolean"}}}}},
-        {"required", QJsonArray{"type"}}};
-}
-
 SpeechBubble::Placement placementFromString(const QString& name)
 {
     if (name == QLatin1String("right")) return SpeechBubble::Placement::Right;
@@ -70,17 +46,13 @@ void AppInterface::syncGuidanceTools()
         return;
     }
 
-    // The tool set depends on several switches at once (Animations changes the
-    // schema of two tools), so it is rebuilt as a whole.
+    // Bubbles and tours share tools, so the set is rebuilt as a whole.
     for (const QString& name : m_guidanceTools)
         m_client->unregisterTool(name);
     m_guidanceTools.clear();
 
-    const bool highlights = isCapabilityEnabled(Capability::Highlights);
-    const bool shapes     = isCapabilityEnabled(Capability::Shapes);
-    const bool animations = isCapabilityEnabled(Capability::Animations);
-    const bool bubbles    = isCapabilityEnabled(Capability::SpeechBubbles);
-    const bool tours      = isCapabilityEnabled(Capability::Tours);
+    const bool bubbles = isCapabilityEnabled(Capability::SpeechBubbles);
+    const bool tours   = isCapabilityEnabled(Capability::Tours);
 
     auto add = [this](Tool tool, ToolHandler handler) {
         // These tools only draw on top of the application; they change
@@ -89,75 +61,6 @@ void AppInterface::syncGuidanceTools()
         m_client->registerTool(tool, std::move(handler));
         m_guidanceTools.append(tool.name());
     };
-
-    if (highlights) {
-        Tool tool;
-        tool.setName("ui_highlight_widget")
-            .setTitle("Highlight widget")
-            .setDescription(
-                "Draw an outline around a widget to show the user where something is. Use it "
-                "whenever you refer to a control the user has to find or click. The outline "
-                "follows the widget and disappears with it. Returns the overlay id; remove it "
-                "with ui_remove_overlay once it has served its purpose, or give durationMs.")
-            .addParameter("id", "string", "Widget id from ui_get_widget_tree or ui_find_widgets.", true)
-            .addParameter("color", "string", "Outline colour, e.g. \"#ff8800\" (default orange).", false)
-            .addParameter("durationMs", "integer",
-                          "Remove the highlight after this many milliseconds; 0 (default) keeps it "
-                          "until removed. At most 300000.", false);
-        if (animations)
-            tool.addRawParameter("animation", animationSchema(), false);
-        add(tool, [this](const QJsonObject& args) { return highlightWidget(args); });
-    }
-
-    if (shapes) {
-        Tool tool;
-        tool.setName("ui_draw_shape")
-            .setTitle("Draw shape")
-            .setDescription(
-                "Draw a shape on top of a window: a frame around an area, a line or arrow from "
-                "one place to another, a circle, or a spotlight that dims everything except the "
-                "target. Give 'target' to attach the shape to a widget (it then follows the "
-                "widget), or 'rect' / 'from' + 'to' in window coordinates (see the geometry "
-                "values of ui_get_widget_tree). An arrow with 'from' and 'target' points at the "
-                "widget. Returns the overlay id.")
-            .addEnumParameter("shape", {"rect", "roundedRect", "ellipse", "line", "arrow", "spotlight"},
-                              "What to draw.", true)
-            .addParameter("target", "string", "Widget id to attach the shape to.", false)
-            .addRawParameter("rect", QJsonObject{
-                {"type", "object"},
-                {"description", "Area in window coordinates, when there is no target."},
-                {"properties", QJsonObject{{"x", QJsonObject{{"type", "number"}}},
-                                           {"y", QJsonObject{{"type", "number"}}},
-                                           {"width", QJsonObject{{"type", "number"}}},
-                                           {"height", QJsonObject{{"type", "number"}}}}},
-                {"required", QJsonArray{"x", "y", "width", "height"}}}, false)
-            .addRawParameter("from", pointSchema("Start of a line or arrow, window coordinates."), false)
-            .addRawParameter("to", pointSchema("End of a line or arrow, window coordinates."), false)
-            .addParameter("color", "string", "Stroke colour, e.g. \"#ff8800\".", false)
-            .addParameter("fill", "string", "Fill colour; use #aarrggbb for a translucent fill.", false)
-            .addParameter("strokeWidth", "number", "Line width in pixels (default 2).", false)
-            .addParameter("durationMs", "integer",
-                          "Remove the shape after this many milliseconds; 0 (default) keeps it.", false);
-        if (animations)
-            tool.addRawParameter("animation", animationSchema(), false);
-        add(tool, [this](const QJsonObject& args) { return drawShape(args); });
-    }
-
-    if (highlights || shapes) {
-        Tool removeTool;
-        removeTool.setName("ui_remove_overlay")
-            .setTitle("Remove overlay")
-            .setDescription("Remove one highlight or shape by the id returned when it was drawn.")
-            .addParameter("id", "string", "Overlay id.", true);
-        add(removeTool, [this](const QJsonObject& args) { return removeOverlay(args); });
-
-        Tool clearTool;
-        clearTool.setName("ui_clear_overlays")
-            .setTitle("Clear overlays")
-            .setDescription("Remove every highlight and shape. Do this when the explanation they "
-                            "belonged to is finished.");
-        add(clearTool, [this](const QJsonObject& args) { return clearOverlays(args); });
-    }
 
     if (bubbles) {
         Tool tool;
@@ -216,95 +119,15 @@ void AppInterface::syncGuidanceTools()
             .setTitle("Clear bubbles")
             .setDescription("Close every speech bubble and tour.");
         add(clearTool, [this](const QJsonObject& args) { return clearBubbles(args); });
-    }
 
-    if (highlights || shapes || bubbles || tours) {
-        Tool tool;
-        tool.setName("ui_list_guidance")
+        Tool listTool;
+        listTool.setName("ui_list_guidance")
             .setTitle("List guidance")
             .setDescription(
-                "List the highlights, shapes, bubbles and tours currently shown, and which "
-                "bubbles the user has closed. Check before adding more, so the window does not "
-                "fill up with leftovers.");
-        add(tool, [this](const QJsonObject& args) { return listGuidance(args); });
+                "List the bubbles and tours currently shown, and which bubbles the user has "
+                "closed. Check before adding more, so the window does not fill up with leftovers.");
+        add(listTool, [this](const QJsonObject& args) { return listGuidance(args); });
     }
-}
-
-// ---------------------------------------------------------------- overlays
-
-QJsonObject AppInterface::addOverlay(QWidget* window, QWidget* anchor, QJsonObject spec)
-{
-    // Without the Animations switch an animation is not offered in the schema;
-    // one sent anyway is dropped rather than refused.
-    if (!isCapabilityEnabled(Capability::Animations))
-        spec.remove("animation");
-
-    OverlayItem item;
-    item.anchor = anchor;
-    QString error;
-    if (!GuideOverlay::overlayItemFromJson(spec, &item, &error))
-        return toolError(error);
-
-    const QString id = GuideOverlay::forWindow(window)->addItem(item);
-    if (id.isEmpty())
-        return toolError(QStringLiteral(
-            "the overlay was not added: it needs a target widget or valid coordinates, and a "
-            "window holds at most %1 overlays (free some with ui_clear_overlays)")
-            .arg(int(GuideOverlay::kMaxItems)));
-    return toolOk({{"overlay", id}});
-}
-
-QJsonObject AppInterface::highlightWidget(const QJsonObject& args)
-{
-    QWidget* widget = nullptr;
-    const QJsonObject error = resolve(args.value("id").toString(), widget);
-    if (!error.isEmpty())
-        return error;
-
-    QJsonObject spec = args;
-    spec.remove("id");                      // the widget id, not an overlay id
-    spec["shape"] = QStringLiteral("roundedRect");
-    return addOverlay(widget->window(), widget, spec);
-}
-
-QJsonObject AppInterface::drawShape(const QJsonObject& args)
-{
-    QWidget* anchor = nullptr;
-    if (args.contains("target")) {
-        const QJsonObject error = resolve(args.value("target").toString(), anchor);
-        if (!error.isEmpty())
-            return error;
-    }
-    QWidget* window = anchor ? anchor->window() : roots().value(0);
-    if (!window)
-        return toolError(QStringLiteral("no window to draw on"));
-
-    QJsonObject spec = args;
-    spec.remove("target");
-    spec.remove("id");
-    return addOverlay(window, anchor, spec);
-}
-
-QJsonObject AppInterface::removeOverlay(const QJsonObject& args)
-{
-    const QString id = args.value("id").toString();
-    for (QWidget* root : roots()) {
-        if (GuideOverlay::forWindow(root)->removeItem(id))
-            return toolOk();
-    }
-    return toolError(QStringLiteral("no overlay with id '%1' (it may have expired or its widget "
-                                    "may be gone)").arg(id));
-}
-
-QJsonObject AppInterface::clearOverlays(const QJsonObject&)
-{
-    int removed = 0;
-    for (QWidget* root : roots()) {
-        GuideOverlay* overlay = GuideOverlay::forWindow(root);
-        removed += overlay->itemIds().size();
-        overlay->clear();
-    }
-    return toolOk({{"removed", removed}});
 }
 
 // ---------------------------------------------------------------- bubbles
@@ -399,15 +222,12 @@ QJsonObject AppInterface::clearBubbles(const QJsonObject&)
 
 QJsonObject AppInterface::listGuidance(const QJsonObject&)
 {
-    QJsonArray overlays;
     QJsonArray bubbles;
     for (QWidget* root : roots()) {
-        for (const QString& id : GuideOverlay::forWindow(root)->itemIds())
-            overlays.append(id);
         for (const QJsonValue& entry : BubbleManager::forWindow(root)->describe())
             bubbles.append(entry);
     }
-    return toolOk({{"overlays", overlays}, {"bubbles", bubbles}});
+    return toolOk({{"bubbles", bubbles}});
 }
 
 void AppInterface::clearGuidance()

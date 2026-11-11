@@ -15,7 +15,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QMap>
 #include <QPlainTextEdit>
@@ -49,6 +51,9 @@ public:
         ADD_TEST(TST_Scripting::testApiDefinition);
         ADD_TEST(TST_Scripting::testModelRunsScripts);
         ADD_TEST(TST_Scripting::testModelRunsLongScriptsInTheBackground);
+        ADD_TEST(TST_Scripting::testModelScriptGetsKeysAndMouse);
+        ADD_TEST(TST_Scripting::testModelScriptHandlesWidgetSignal);
+        ADD_TEST(TST_Scripting::testModelScriptDrawsOnCanvas);
         ADD_TEST(TST_Scripting::testApprovalAlways);
         ADD_TEST(TST_Scripting::testApprovalForChangingScripts);
         ADD_TEST(TST_Scripting::testApprovalDialog);
@@ -1042,6 +1047,164 @@ private:
         const QJsonObject result = finished["result"].toObject();
         TEST_ASSERT(result["result"].toInt() >= 9 && result["result"].toInt() <= 11);
         TEST_ASSERT(result["duration_ms"].toDouble() >= 10000);
+    }
+
+    TEST_FUNCTION(testModelScriptGetsKeysAndMouse)
+    {
+        TEST_START;
+
+        FakeApi api;
+        QtLLM::Client client("key", api.url());
+        QtLLM::Scripting scripting(&client);
+        TEST_ASSERT(scripting.isEventAllowedForRequestedRuns("key"));
+        TEST_ASSERT(scripting.isEventAllowedForRequestedRuns("mouse"));
+
+        auto description = [&]() {
+            for (const QtLLM::Tool& tool : client.registeredTools())
+                if (tool.name() == "run_script")
+                    return tool.description();
+            return QString();
+        };
+        // The model hears of input only while a widget forwards it.
+        TEST_ASSERT(!description().contains("on(\"key\""));
+        QWidget view;
+        QtLLM::forwardInput(&scripting, &view);
+        TEST_ASSERT(description().contains("on(\"key\""));
+
+        QStringList logged;
+        QObject::connect(&scripting, &QtLLM::Scripting::runLog,
+                         [&](QtLLM::Scripting::RunId, const QString& text) { logged << text; });
+
+        const QString code =
+            "on('key', function (e) {\n"
+            "    if (e.type !== 'down') return;\n"
+            "    log('key ' + e.key);\n"
+            "    if (e.key === 'Escape') { off('key'); off('mouse'); }\n"
+            "});\n"
+            "on('mouse', function (e) { log('mouse ' + e.type + ' ' + e.button + ' ' + e.x); });\n"
+            "log('ready');\n"
+            "return 'listening';\n";
+        api.replies.enqueue(scriptCall(code, QJsonObject{{"background", true}}));
+        api.replies.enqueue(FakeApi::textReply("Listening."));
+        Outcome outcome = turn(client, "Watch my keys.");
+        TEST_ASSERT(outcome.errors.isEmpty());
+        const auto id = QtLLM::Scripting::RunId(outcome.toolResults[0]["run_id"].toDouble());
+        TEST_ASSERT(spin([&]() { return logged.contains("ready"); }, 5000));
+
+        auto key = [&](Qt::Key k, const QString& text) {
+            QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier, text);
+            QApplication::sendEvent(&view, &press);
+            QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier, text);
+            QApplication::sendEvent(&view, &release);
+        };
+        QMouseEvent click(QEvent::MouseButtonPress, QPointF(12, 5), QPointF(12, 5), QPointF(12, 5),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&view, &click);
+        key(Qt::Key_A, "a");
+        key(Qt::Key_Escape, QString());
+
+        // Escape takes the handlers off: the run ends by itself.
+        TEST_ASSERT(spin([&]() { return !scripting.isRunning(id); }, 5000));
+        TEST_ASSERT(logged.contains("mouse down left 12"));
+        TEST_ASSERT(logged.contains("key A"));
+        TEST_ASSERT(logged.contains("key Escape"));
+    }
+
+    // ui.* from exposeWidgets(): the model's script finds a button and gets
+    // its clicks - the "ui:..." events Scripting allows for requested runs.
+    TEST_FUNCTION(testModelScriptHandlesWidgetSignal)
+    {
+        TEST_START;
+
+        FakeApi api;
+        QtLLM::Client client("key", api.url());
+        QtLLM::Scripting scripting(&client);
+        auto description = [&]() {
+            for (const QtLLM::Tool& tool : client.registeredTools())
+                if (tool.name() == "run_script")
+                    return tool.description();
+            return QString();
+        };
+        TEST_ASSERT(!description().contains("ui.connect"));
+
+        QWidget window;
+        auto* button = new QPushButton("OK", &window);
+        button->setObjectName("okButton");
+        QtLLM::exposeWidgets(&scripting, &window);
+        TEST_ASSERT(description().contains("ui.connect"));
+
+        QStringList logged;
+        QObject::connect(&scripting, &QtLLM::Scripting::runLog,
+                         [&](QtLLM::Scripting::RunId, const QString& text) { logged << text; });
+        const QString code =
+            "const ok = ui.find({name: 'okButton', exact: true})[0];\n"
+            "const ev = ui.connect(ok.id, 'clicked');\n"
+            "on(ev, function (e) { log('clicked ' + e.signal); off(ev); });\n"
+            "log('ready');\n";
+        api.replies.enqueue(scriptCall(code, QJsonObject{{"background", true}}));
+        api.replies.enqueue(FakeApi::textReply("Waiting for the click."));
+        Outcome outcome = turn(client, "Tell me when OK is clicked.");
+        TEST_ASSERT(outcome.errors.isEmpty());
+        const auto id = QtLLM::Scripting::RunId(outcome.toolResults[0]["run_id"].toDouble());
+        TEST_ASSERT(spin([&]() { return logged.contains("ready"); }, 5000));
+
+        button->click();
+        TEST_ASSERT(spin([&]() { return !scripting.isRunning(id); }, 5000));
+        TEST_ASSERT(logged.contains("clicked clicked"));
+    }
+
+    TEST_FUNCTION(testModelScriptDrawsOnCanvas)
+    {
+        TEST_START;
+
+        FakeApi api;
+        QtLLM::Client client("key", api.url());
+        QtLLM::Scripting scripting(&client);
+
+        auto description = [&]() {
+            for (const QtLLM::Tool& tool : client.registeredTools())
+                if (tool.name() == "run_script")
+                    return tool.description();
+            return QString();
+        };
+        TEST_ASSERT(!description().contains("gfx"));
+        QWidget view;
+        view.resize(200, 100);
+        QtLLM::ScriptCanvas* canvas = scripting.attachCanvas(&view);
+        TEST_ASSERT(canvas && canvas->isAllowedForRequestedRuns());
+        TEST_ASSERT(description().contains("gfx.present()"));
+
+        int frames = 0;
+        QObject::connect(canvas, &QtLLM::ScriptCanvas::presented,
+                         [&](QtLLM::Scripting::RunId, const QRect&) { ++frames; });
+
+        // A ball that moves each frame until the model stops it.
+        const QString code =
+            "var x = 0;\n"
+            "gfx.onFrame(function (dt) {\n"
+            "    x = (x + 2) % gfx.width;\n"
+            "    gfx.clear();\n"
+            "    gfx.circle(x, 50, 5, {fill: 'red'});\n"
+            "    gfx.present();\n"
+            "});\n";
+        api.replies.enqueue(scriptCall(code, QJsonObject{{"background", true}}, "g1"));
+        api.replies.enqueue(FakeApi::textReply("Bouncing."));
+        Outcome outcome = turn(client, "Animate a ball.");
+        TEST_ASSERT(outcome.errors.isEmpty());
+        TEST_COMPARE(outcome.toolResults[0]["state"].toString(), QString("running"));
+        const auto id = QtLLM::Scripting::RunId(outcome.toolResults[0]["run_id"].toDouble());
+
+        TEST_ASSERT(spin([&]() { return frames >= 10; }, 5000));
+        TEST_ASSERT(canvas->layers().contains(id));
+
+        // Stopped, its drawing goes.
+        scripting.stop(id);
+        TEST_ASSERT(spin([&]() { return !scripting.isRunning(id); }, 5000));
+        TEST_ASSERT(spin([&]() { return canvas->layers().isEmpty(); }, 2000));
+
+        // Detached, the model is no longer told about it.
+        delete canvas;
+        TEST_ASSERT(!description().contains("gfx"));
     }
 
     TEST_FUNCTION(testApprovalAlways)

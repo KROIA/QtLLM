@@ -95,9 +95,9 @@ private:
                          QStringList({"ui_restore_widget_colors", "ui_set_widget_colors"}));
 
             // setCapabilities() covers the new flags like the old ones.
-            ui.setCapabilities(Cap::Themes | Cap::Highlights);
+            ui.setCapabilities(Cap::Themes | Cap::SpeechBubbles);
             TEST_COMPARE(styleTools(client), QStringList({"ui_list_themes", "ui_set_theme"}));
-            TEST_ASSERT(client.toolNames().contains("ui_highlight_widget"));
+            TEST_ASSERT(client.toolNames().contains("ui_show_bubble"));
 
             // The theme names are part of the schema, also when a theme is
             // registered after the capability was switched on.

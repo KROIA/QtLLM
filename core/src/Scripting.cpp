@@ -53,14 +53,17 @@ Scripting::Scripting(Client* client, QObject* parent)
     , m_client(client)
 {
     setRequesterName(QStringLiteral("the assistant"));
+    // Keys and clicks for the model's scripts - from what forwardInput() forwards.
+    allowEventForRequestedRuns(QStringLiteral("key"));
+    allowEventForRequestedRuns(QStringLiteral("mouse"));
+    // Signals a script connected with ui.connect() (events "ui:<id>:<signal>").
+    allowEventForRequestedRuns(QStringLiteral("ui"));
 
     // The engine's switches decide which tools the model has.
     connect(this, &ScriptEngine::enabledChanged, this, [this]() { syncTools(); });
     connect(this, &ScriptEngine::settingsChanged, this, [this]() { syncTools(); });
-    connect(this, &ScriptEngine::methodsChanged, this, [this]() {
-        if (m_apiDelivery == ApiDelivery::InToolDescription)
-            syncTools();
-    });
+    // Also for input.mouse(): the description tells of input only while it is forwarded.
+    connect(this, &ScriptEngine::methodsChanged, this, [this]() { syncTools(); });
 
     // ScriptHost 2 has no dialog of its own any more.
     useApprovalDialog(this);
@@ -160,6 +163,14 @@ void Scripting::exposeTool(const QString& toolName, bool expose)
 {
     m_exposeOverride.insert(toolName, expose);
     syncExposedTools();
+}
+
+ScriptCanvas* Scripting::attachCanvas(QWidget* target)
+{
+    ScriptCanvas* canvas = ScriptHost::attachCanvas(this, target);
+    canvas->setAllowedForRequestedRuns(true);
+    syncTools();    // allowing it emits nothing; run_script's description changes
+    return canvas;
 }
 
 void Scripting::exposeToolGroup(const QString& group, bool expose)
@@ -464,6 +475,37 @@ void Scripting::syncTools()
         "script goes on after your turn: for one that runs long (a loop that watches "
         "something, timers with setInterval) - script_status reads how it is doing, "
         "stop_script ends it.");
+    if (hasMethod(QStringLiteral("input.mouse"))
+        && (isEventAllowedForRequestedRuns(QStringLiteral("key"))
+            || isEventAllowedForRequestedRuns(QStringLiteral("mouse")))) {
+        description += QStringLiteral(
+            " A script can follow the user's input in the application: on(\"key\", fn) gets "
+            "{type: \"down\"|\"up\", key: \"Space\"|\"A\"|\"Left\"|\"Escape\"|..., text, modifiers: "
+            "[\"shift\",\"control\",\"alt\",\"meta\"], repeat}; on(\"mouse\", fn) gets {type: "
+            "\"down\"|\"up\"|\"dblclick\"|\"wheel\", button: \"left\"|\"right\"|\"middle\"|..., x, y, "
+            "modifiers, deltaX, deltaY}; off(name) removes the handlers; input.mouse() reads the "
+            "pointer {x, y, inside, buttons}. A script with a handler goes on after its body "
+            "returned - start it with background.");
+    }
+    if (hasMethod(QStringLiteral("ui.tree")))
+        description += QStringLiteral(
+            " A script can read and change the application's widgets with ui.* (ui.tree, ui.find, "
+            "ui.setProperty, ui.moveToLayout, ...; ui.restore() undoes the run's changes), build a "
+            "dialog with ui.create + ui.exec, and handle a widget's signal with "
+            "on(ui.connect(widget, \"clicked\"), fn). See script_api.");
+    const QString gfx = QStringLiteral("gfx");
+    if (extensions().contains(gfx) && isExtensionEnabled(gfx) && isExtensionAllowedForRequestedRuns(gfx)) {
+        description += QStringLiteral(
+            " A script can draw over the application window with gfx (immediate mode, window "
+            "coordinates): gfx.clear(), then gfx.rect / roundedRect / circle / ellipse / line / "
+            "arrow / polygon / text(..., style) - style {stroke, fill, width, dash, opacity, font, "
+            "align} - then gfx.present() shows the frame. gfx.widget(objectName) as the first "
+            "argument of rect / roundedRect / ellipse / text / arrow draws on a widget and follows "
+            "it; gfx.onFrame(function (dt) {...}) runs once per screen refresh for animation; "
+            "gfx.width, gfx.height. What a script drew disappears when it ends, so a drawing that "
+            "should stay keeps its script alive (gfx.onFrame, setTimeout, on()) - start it with "
+            "background and end it with stop_script. The full gfx API is in script_api.");
+    }
     const int timeoutMs = limits().timeoutMs;
     if (timeoutMs > 0)
         description += QStringLiteral(" Every script ends after %1 seconds.").arg(timeoutMs / 1000);

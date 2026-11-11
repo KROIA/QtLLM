@@ -983,7 +983,7 @@ Lets the model inspect, operate and point at the host application's user interfa
 auto* ui = new QtLLM::AppInterface(&client, mainWindow, mainWindow);
 using Cap = QtLLM::AppInterface::Capability;
 ui->setCapabilities(Cap::ReadActions | Cap::ReadWidgets | Cap::Screenshots
-                  | Cap::Highlights | Cap::SpeechBubbles | Cap::Tours);
+                  | Cap::SpeechBubbles | Cap::Tours);
 ```
 
 | Capability | Tools |
@@ -996,9 +996,6 @@ ui->setCapabilities(Cap::ReadActions | Cap::ReadWidgets | Cap::Screenshots
 | `ReadLayouts` | `ui_get_layout` |
 | `ModifyLayouts` | `ui_modify_layout`, `ui_undo_layout_change` |
 | `Screenshots` | `ui_screenshot` (`annotate: true` numbers the interactive widgets and returns number -> id) |
-| `Highlights` | `ui_highlight_widget` |
-| `Shapes` | `ui_draw_shape` (rect, roundedRect, ellipse, line, arrow, spotlight) |
-| `Animations` | adds the `animation` parameter to the two above (blink, fade, pulse, colorLoop, marchingAnts, drawOn) |
 | `SpeechBubbles` | `ui_show_bubble` |
 | `Tours` | `ui_show_tour` (all at once, or one at a time with Back / Next) |
 | `WidgetColors` | `ui_set_widget_colors` (background, text, border of one widget), `ui_restore_widget_colors` (one widget, or all) |
@@ -1009,7 +1006,9 @@ ui->setCapabilities(Cap::ReadActions | Cap::ReadWidgets | Cap::Screenshots
 | `EditItems` | `ui_set_item_text`: text and check state through the model, where the item allows it |
 | `WaitForUi` | `ui_wait_for`: until a widget is visible / hidden / enabled / disabled / exists / gone, a property has a value, or a window opened / closed |
 
-Shared helper tools appear with the capabilities that need them: `ui_remove_overlay`, `ui_clear_overlays`, `ui_close_bubble`, `ui_clear_bubbles`, `ui_list_guidance`.
+Shared helper tools appear with the capabilities that need them: `ui_close_bubble`, `ui_clear_bubbles`, `ui_list_guidance`.
+
+There are no draw tools (the former `Highlights`, `Shapes`, `Animations`): the model draws over the application with a script on ScriptHost's canvas, see `Scripting::attachCanvas()` in [Scripting.md](Scripting.md#drawing).
 
 | Method | Description |
 |---|---|
@@ -1018,8 +1017,8 @@ Shared helper tools appear with the capabilities that need them: `ui_remove_over
 | `excludeWidget(QWidget*)` | Subtree hidden from every tool. The chat dock is excluded by default |
 | `setWritableProperties(QStringList)` | Properties `ui_set_property` may write (default: text, value, checked, currentIndex, currentText, enabled, visible, toolTip) |
 | `resetLayoutChanges()` | Undo every layout modification |
-| `clearGuidance()` | Remove all highlights, shapes, bubbles and tours |
-| `setAnimationsEnabled(bool)` | Off: overlays are shown static (reduced motion) |
+| `clearGuidance()` | Remove all bubbles and tours |
+| `setAnimationsEnabled(bool)` | Off: the highlight of a tour step is shown static (reduced motion) |
 | `resetWidgetColors()` | Give every widget recoloured by the model its original colours back |
 | `setWindowDiscoveryEnabled(bool)` | Dialogs and other windows the application opens become visible to all tools (and to `ui_list_windows`) without `addRoot()` |
 | `resetPropertyChanges()` | Undo every `ui_set_property` (the model has `ui_undo_property_change`) |
@@ -1046,7 +1045,7 @@ The drawing classes are usable directly: `GuideOverlay::forWindow(w)->highlight(
 
 ## GuideOverlay and speech bubbles
 
-The drawing classes behind the guidance tools (`GuideOverlay.h`, `SpeechBubble.h`, both in `QtLLM.h`). An application can use them without `AppInterface`. Owner thread only.
+The drawing classes behind the guidance tools (`GuideOverlay.h`, `SpeechBubble.h`, both in `QtLLM.h`; a one-at-a-time tour highlights its step with `GuideOverlay`). An application can use them without `AppInterface`. Owner thread only.
 
 ```cpp
 auto* overlay = QtLLM::GuideOverlay::forWindow(mainWindow);
@@ -1276,7 +1275,7 @@ Registers `app_help_search(query)` and `app_help_read(id, offset)` while there i
 
 Lets the model run a JavaScript program inside the application instead of making one tool call per item. The script calls methods the application defines; only what it returns goes back to the model. Full guide: [Scripting.md](Scripting.md).
 
-The engine is the [ScriptHost](https://github.com/KROIA/ScriptHost) library, an optional dependency. `QtLLM::Scripting` derives from `ScriptHost::ScriptEngine` and adds the model's side; `QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget` and `ScriptEditorDialog` are the ScriptHost classes.
+The engine is the [ScriptHost](https://github.com/KROIA/ScriptHost) library, an optional dependency. `QtLLM::Scripting` derives from `ScriptHost::ScriptEngine` and adds the model's side; `QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget`, `ScriptEditorDialog`, `ScriptCanvas` and `ScriptUi` are the ScriptHost classes (ScriptHost 2.3 or later).
 
 ```cpp
 auto* scripting = new QtLLM::Scripting(&client, this);
@@ -1301,6 +1300,7 @@ scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
 | Approval | `setApprovalRequired(ScriptKind, bool)` per kind (`NewReading`, `NewChanging`, `SavedReading`, `SavedChanging`, `DryRun`), `setApproval(Never \| ChangingScripts \| Always)` for all, `setApprovalHandler`; the dialog is installed by default, `QtLLM::useApprovalDialog(scripting, parent)` gives it a parent |
 | Debugger | `RunOptions::debug` and `statements`, `stepStatement()`, `stepRun()` (to the next call), `continueRun()`, `setBreakpoints()`, signals `runPaused(line, method, arguments, variables)`, `runCallFinished` |
 | Saved scripts | `QtLLM::ScriptLibrary`: `setDirectory`, `addReadOnlyDirectory`, `scripts()`, `save`, `remove` |
+| The application's window | `QtLLM::forwardInput(scripting, widget)`: keys and clicks as `"key"` / `"mouse"` events, `input.mouse()`. `attachCanvas(widget)` returns a `ScriptCanvas`: `gfx`, drawing and animation over the widget, also for the model's scripts. `QtLLM::exposeWidgets(scripting, widget)` returns a `ScriptUi`: the `ui.*` methods (group "UI") to read and change widgets, build dialogs and connect signals. `run_script` describes each while it is there. See [Scripting.md](Scripting.md#keys-and-the-mouse) |
 | User interface | `SettingsDialog::setScripting()` adds the Scripts tab (`QtLLM::ScriptsWidget`); `QtLLM::ScriptEditorDialog` is the editor with runner and call stepping |
 | User's choices | `userSettings()` / `applyUserSettings()` |
 

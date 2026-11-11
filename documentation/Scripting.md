@@ -26,7 +26,7 @@ The calls happen inside the application. Only the script and what it returns go 
 
 The engine is a library of its own, [ScriptHost](https://github.com/KROIA/ScriptHost): methods, checks, limits, dry run, approval, saved scripts, the Scripts tab and the editor with its debugger. It knows nothing about language models and can be used without QtLLM.
 
-`QtLLM::Scripting` is a `ScriptHost::ScriptEngine` with the model's side added: the tools `run_script`, `script_api`, `script_status` and `stop_script`, tools as methods, `llm.ask`, and ending a script when its turn is cancelled (unless the model started it in the background). Scripting builds against ScriptHost 2: the engine and its widgets (ScriptHostWidgets) are both linked. The ScriptHost classes are available under QtLLM names (`QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget`, `ScriptEditorDialog`).
+`QtLLM::Scripting` is a `ScriptHost::ScriptEngine` with the model's side added: the tools `run_script`, `script_api`, `script_status` and `stop_script`, tools as methods, `llm.ask`, and ending a script when its turn is cancelled (unless the model started it in the background). Scripting builds against ScriptHost 2.3 or later: the engine and its widgets (ScriptHostWidgets) are both linked. The ScriptHost classes are available under QtLLM names (`QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget`, `ScriptEditorDialog`, `ScriptCanvas`, `ScriptUi`), and so are its functions `QtLLM::useApprovalDialog`, `forwardInput` and `exposeWidgets`.
 
 ## Building with or without it
 
@@ -71,6 +71,14 @@ scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
 ```
 
 From then on the model has the tools `run_script`, `script_api`, `script_status` and `stop_script`.
+
+Scripts can also reach the application's window. Each is opt-in, and each is described further down:
+
+```cpp
+QtLLM::forwardInput(scripting, mainWindow);    // on("key"), on("mouse"), input.mouse()
+scripting->attachCanvas(mainWindow);           // gfx: draw over the window, animate
+QtLLM::exposeWidgets(scripting, mainWindow);   // ui.*: read and change widgets, build dialogs
+```
 
 ## The methods a script can call
 
@@ -219,6 +227,24 @@ The script goes on after the turn - a `while` loop with `sleep`, a `setInterval`
 
 Both tools only know runs started through `run_script`; scripts of the user or the application are not the model's to stop. Background runs are held to the engine's `Limits` like every requested run - for scripts that run for hours, raise `timeoutMs` and `maxCalls` (0 = no limit).
 
+### Keys and the mouse
+
+A background script can react to the user: `on("key", fn)` and `on("mouse", fn)` get the keys and clicks of a widget the application forwards, and `input.mouse()` reads the pointer (fields: ScriptHost's Guide, *Keys and the mouse*).
+
+```cpp
+QtLLM::forwardInput(scripting, mainWindow);   // returns the forwarder; delete it to stop
+```
+
+ScriptHost gives requested scripts no events unless allowed; `Scripting` allows `"key"` and `"mouse"`. Nothing arrives without `forwardInput()`, and `run_script` tells the model about input only while a widget is forwarded. Keys reach the widget only while a control that ignores them has the focus, so text typed into the chat or a text field is not passed on. To take the keys back: `scripting->allowEventForRequestedRuns("key", false)` (likewise `"mouse"`).
+
+### Drawing
+
+`scripting->attachCanvas(widget)` gives scripts, the model's included, ScriptHost's canvas over the widget: the global `gfx` with shapes, text, images, `gfx.onFrame()` for animation and shapes that follow a widget (`gfx.widget(name)`). Drawing happens on the script's thread and costs no method calls; a script's drawing goes when it ends. While a canvas is attached, `run_script` tells the model about `gfx`; the full API is in `script_api`. Delete the returned canvas to take it away. `ScriptHost::attachCanvas()` alone gives it only to the application's and the user's scripts. Details: ScriptHost's Guide. This is how the model draws over the application: `AppInterface` has no draw tools.
+
+### Widgets
+
+`QtLLM::exposeWidgets(scripting, widget)` gives scripts ScriptHost's `ui.*` methods for the widget's tree (group "UI"): read it (`ui.tree`, `ui.find`, `ui.info`, `ui.property`), change widgets and layouts (`ui.setProperty`, `ui.moveToLayout`, ...; `ui.restore()` undoes what the run changed), build a dialog (`ui.create`, `ui.exec`) and handle signals (`on(ui.connect(widget, "clicked"), fn)`). The changing ones are not read-only, so the approval rules apply. `Scripting` allows the `"ui"` events for the model's scripts, and `run_script` mentions `ui.*` while the methods are there. Hide a subtree with `QtLLM::ScriptUi::hideWidget(w)`; delete the returned `ScriptUi` to stop. Details: ScriptHost's Guide.
+
 ### The language
 
 ECMAScript 2016 as implemented by Qt: `let` / `const`, arrow functions, `for...of`, template strings, destructuring, `Map` / `Set`. Not available: `async` / `await`, object spread; optional chaining (`?.`) and `??` only in a build with Qt 6. The script is the body of a function: `return` hands back the result. It runs in strict mode.
@@ -315,6 +341,9 @@ The model cannot delete scripts. `setModelMaySaveScripts(false)` takes `save_scr
 | Tools as methods | `exposeTool`, `exposeToolGroup`, `exposeAllTools` | as methods, above |
 | `llm.ask` / `llm.choose` | `setLlmConfigProvider`, `setLlmCallLimit` | as methods, above |
 | Saved scripts | `setLibrary`, `setModelMaySaveScripts` | |
+| Keys and the mouse | `forwardInput(scripting, widget)`; `allowEventForRequestedRuns("key" / "mouse", false)` takes them from the model's scripts | |
+| Drawing (`gfx`) | `attachCanvas(widget)`; delete the canvas to take it away | |
+| Widgets (`ui.*`) | `exposeWidgets(scripting, widget)`, then like methods: group `"UI"`; `ScriptUi::hideWidget` hides a subtree | as methods, above |
 | Editing in the Scripts tab | `setUserMayEditScripts(bool)` | |
 | Runner and debugger in the editor | `setDebuggerEnabled(bool)` | |
 | Each scripting tool | `Client::setToolEnabled("run_script", ...)`, group `"Scripting"` | `Client::setToolUserConfigurable` |
@@ -329,7 +358,7 @@ A switch that is not user configurable is shown disabled in the Scripts tab, and
 
 - **Switches**: "Allow the assistant to run scripts" and, under "Ask before running", one check box per kind of script.
 - **Scripts**: the saved scripts. New, Edit, Duplicate, Delete, Open folder.
-- **Methods**: every method with a check box; locked ones are greyed out.
+- **Methods**: every method with a check box, by group (the application's, "UI" for `ui.*`, the built-ins); a group can be switched as a whole; locked ones are greyed out.
 - **Runs**: the scripts running now - who started them (the user or the assistant), since when, for how long, and a Stop button; a selected one shows its run id (the `run_id` the model uses), arguments, code and its log as it is written - and the scripts run in this session, with code, arguments, result and log.
 
 The editor (`QtLLM::ScriptEditorDialog`) is a window of its own: name, description, parameters, the code, and beside it the reference of the methods a script can call, with search. A double click inserts a call.

@@ -45,9 +45,8 @@ public:
         ReadLayouts      = 1 << 5,   // ui_get_layout
         ModifyLayouts    = 1 << 6,   // ui_modify_layout, ui_undo_layout_change
         Screenshots      = 1 << 7,   // ui_screenshot
-        Highlights       = 1 << 8,   // ui_highlight_widget
-        Shapes           = 1 << 9,   // ui_draw_shape
-        Animations       = 1 << 10,  // animation parameters accepted by the two above
+        // 1 << 8 ... 1 << 10 were Highlights, Shapes, Animations: drawing is
+        // done by scripts now (Scripting::attachCanvas, gfx).
         SpeechBubbles    = 1 << 11,  // ui_show_bubble
         Tours            = 1 << 12,  // ui_show_tour
         WidgetColors     = 1 << 13,  // ui_set_widget_colors, ui_restore_widget_colors
@@ -175,23 +174,18 @@ public:
     QJsonObject listThemes(const QJsonObject& args);
     QJsonObject applyTheme(const QJsonObject& args);
 
-    // Guidance tools (capabilities Highlights, Shapes, Animations,
-    // SpeechBubbles, Tours): the model draws on top of the application to show
-    // the user where something is. Nothing in the application is changed.
-    QJsonObject highlightWidget(const QJsonObject& args);
-    QJsonObject drawShape(const QJsonObject& args);
-    QJsonObject removeOverlay(const QJsonObject& args);
-    QJsonObject clearOverlays(const QJsonObject& args);
+    // Guidance tools (capabilities SpeechBubbles, Tours): the model explains
+    // things in place, next to the widget. Nothing in the application is changed.
     QJsonObject showBubble(const QJsonObject& args);
     QJsonObject showTour(const QJsonObject& args);
     QJsonObject closeBubble(const QJsonObject& args);
     QJsonObject clearBubbles(const QJsonObject& args);
     QJsonObject listGuidance(const QJsonObject& args);
 
-    // Remove every highlight, shape, bubble and tour - e.g. when the
-    // conversation they belonged to is cleared.
+    // Remove every bubble and tour - e.g. when the conversation they belonged
+    // to is cleared.
     void clearGuidance();
-    // Off: every overlay is shown in its static end state (reduced motion).
+    // Off: the highlight of a tour step is shown static (reduced motion).
     // Applies to all overlays of the application.
     void setAnimationsEnabled(bool enabled);
 
@@ -207,14 +201,13 @@ private:
     void registerCapability(Capability capability);
     void unregisterCapability(Capability capability);
     // Registers/unregisters the tools of the guidance capabilities
-    // (Highlights ... Tours); filled in by the visual guidance feature.
+    // (SpeechBubbles, Tours).
     void syncGuidanceTools();
     // Same pattern for SimulateInput + WaitForUi (AppInterfaceInput.cpp) and
     // for ReadItems + SelectItems + EditItems (AppInterfaceItems.cpp): unregister
     // the names in the list, then register what the enabled capabilities need.
     void syncInputTools();
     void syncItemTools();
-    QJsonObject addOverlay(QWidget* window, QWidget* anchor, QJsonObject spec);
 
     QString segmentFor(QWidget* widget) const;
     bool excludedItself(QWidget* widget) const;

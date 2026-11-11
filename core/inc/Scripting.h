@@ -18,6 +18,9 @@
 #include "ScriptLibrary.h"
 #include "ScriptMethod.h"
 #include "ScriptsWidget.h"
+#include "ScriptInput.h"
+#include "ScriptCanvas.h"
+#include "ScriptUi.h"
 #include <QHash>
 #include <QPointer>
 #include <QSet>
@@ -40,9 +43,19 @@ using AsyncScriptMethodHandler = ScriptHost::AsyncScriptMethodHandler;
 using ScriptLibrary            = ScriptHost::ScriptLibrary;
 using ScriptsWidget            = ScriptHost::ScriptsWidget;
 using ScriptEditorDialog       = ScriptHost::ScriptEditorDialog;
+using ScriptCanvas             = ScriptHost::ScriptCanvas;
+using ScriptUi                 = ScriptHost::ScriptUi;
 // Installs the approval dialog for the model's scripts over `parent`.
 // Scripting installs it without a parent; call it again to give it one.
 using ScriptHost::useApprovalDialog;
+// Hands the keys and clicks a widget receives to the scripts, as "key" and
+// "mouse" events, and gives them input.mouse() for the pointer. Returns the
+// forwarder: delete it to stop.
+using ScriptHost::forwardInput;
+// Gives scripts the ui.* methods for a widget tree: read it, change widgets
+// and layouts (ui.restore undoes), build dialogs (ui.create, ui.exec) and
+// handle signals (ui.connect). Returns the ScriptUi: delete it to stop.
+using ScriptHost::exposeWidgets;
 
 // Lets the model run JavaScript inside the application.
 //
@@ -63,6 +76,10 @@ using ScriptHost::useApprovalDialog;
 //     that one goes on, under its run_id, until it ends, reaches the
 //     engine's Limits or the model ends it; script_status and stop_script
 //     are the model's tools for it
+//   - the model's scripts may handle "key" and "mouse" events (ScriptHost
+//     lets requested runs have none unless allowed). They come only from a
+//     widget the application forwards: forwardInput(scripting, widget).
+//     allowEventForRequestedRuns("key", false) takes the keys back.
 //
 //   auto* scripting = new QtLLM::Scripting(&client, this);
 //   QtLLM::ScriptMethod read("db.readObject");
@@ -91,6 +108,14 @@ public:
     // exposed. The consent handler of the client is asked once per tool and
     // script, not once per call.
     void exposeTool(const QString& toolName, bool expose = true);
+
+    // A drawing surface over `target` for scripts, the model's included: the
+    // global `gfx` (ScriptHost's ScriptCanvas - shapes, text, images, a frame
+    // loop for animation, shapes that follow a widget). run_script then tells
+    // the model about it. Returns the canvas, a child of `target`: delete it
+    // to take it away. ScriptHost::attachCanvas() alone keeps it from the
+    // model's scripts.
+    ScriptCanvas* attachCanvas(QWidget* target);
     void exposeToolGroup(const QString& group, bool expose = true);
     void exposeAllTools(bool expose = true);
 

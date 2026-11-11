@@ -115,6 +115,17 @@ void ChatWindow::registerScripting()
     // added: the tools run_script and script_api, tools as methods, llm.ask.
     m_scripting = new QtLLM::Scripting(&m_client, this);
     QtLLM::useApprovalDialog(m_scripting, this);
+    // The window's keys and clicks for scripts: on("key", fn), on("mouse", fn).
+    // Keys come while a control that ignores them has the focus - not what
+    // is typed into the chat or a text field.
+    QtLLM::forwardInput(m_scripting, this);
+    // Scripts draw over the window with gfx (ScriptHost's canvas): outlines,
+    // arrows, animations - the model has no draw tools of its own.
+    m_scripting->attachCanvas(this);
+    // Scripts read and change this window's widgets, and build dialogs, with
+    // ui.*. The chat stays out of their reach, as it does for AppInterface.
+    QtLLM::exposeWidgets(m_scripting, this);
+    QtLLM::ScriptUi::hideWidget(m_chatDock);
 
     auto* table = findChild<QTableWidget*>("inventoryTable");
     const QString group = "Inventory";
