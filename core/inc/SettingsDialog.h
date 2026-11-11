@@ -85,12 +85,11 @@ namespace QtLLM
         void setFieldEditable(Field field, bool editable);
         void setFieldVisible(Field field, bool visible);
 
-        // Two ways to open it:
-        //   exec()  modal: the application waits; Apply applies and closes.
-        //   show()  a window beside the application, which stays usable;
-        //           Apply applies and the window stays open, Cancel drops
-        //           what was not applied and closes it. For one that lives
-        //           as long as it is open: setAttribute(Qt::WA_DeleteOnClose).
+        // Apply applies and leaves it open, "Apply and close" applies and
+        // closes it (Accepted), Cancel drops what was not applied and closes
+        // it. Open it modal with exec(), or with show() as a window beside
+        // the application, which stays usable. For one that lives as long
+        // as it is open: setAttribute(Qt::WA_DeleteOnClose).
         explicit SettingsDialog(QWidget* parent = nullptr);
         ~SettingsDialog();
 
@@ -176,7 +175,8 @@ namespace QtLLM
 
     private slots:
         void onProviderChanged(int index);
-        void onApply();
+        // false: nothing applied (a model the application does not allow).
+        bool onApply();
 
     protected:
         void showEvent(QShowEvent* event) override;

@@ -173,11 +173,16 @@ private:
         TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_cancelButton", &dlg)));
         TEST_ASSERT(UnitTest::Gui::waitForClosed(&dlg));
 
-        // Modal (exec() or open()): Apply accepts the dialog, as before.
+        // Modal too, Apply leaves it open; "Apply and close" applies and
+        // accepts it.
         dlg.open();
         TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_applyButton", &dlg)));
+        TEST_ASSERT(dlg.isVisible());
+        TEST_ASSERT(UnitTest::Gui::type(prompt, " Now."));
+        TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_applyCloseButton", &dlg)));
         TEST_ASSERT(UnitTest::Gui::waitForClosed(&dlg));
         TEST_COMPARE(dlg.result(), int(QDialog::Accepted));
+        TEST_ASSERT(client.exportConversation()["systemPrompt"].toString().endsWith("Now."));
     }
 
     TEST_FUNCTION(testSettingsToolsTabTogglesTool)

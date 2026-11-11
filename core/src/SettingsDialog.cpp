@@ -279,7 +279,9 @@ namespace QtLLM
 
         mainLayout->addWidget(m_tabWidget, 1);
 
-        m_buttonBox = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
+        m_buttonBox = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Ok
+                                           | QDialogButtonBox::Cancel, this);
+        m_buttonBox->button(QDialogButtonBox::Ok)->setText(tr("Apply and close"));
         m_buttonBox->button(QDialogButtonBox::Apply)->setDefault(true);
         m_buttonBox->button(QDialogButtonBox::Apply)->setFocus();
         mainLayout->addWidget(m_buttonBox);
@@ -299,6 +301,7 @@ namespace QtLLM
         m_showToolCallsCheck->setObjectName("qtllm_showToolCallsCheck");
         m_tabWidget->setObjectName("qtllm_settingsTabs");
         m_buttonBox->button(QDialogButtonBox::Apply)->setObjectName("qtllm_applyButton");
+        m_buttonBox->button(QDialogButtonBox::Ok)->setObjectName("qtllm_applyCloseButton");
         m_buttonBox->button(QDialogButtonBox::Cancel)->setObjectName("qtllm_cancelButton");
 
         connect(m_providerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -309,6 +312,10 @@ namespace QtLLM
         });
         connect(m_buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked,
                 this, &SettingsDialog::onApply);
+        connect(m_buttonBox->button(QDialogButtonBox::Ok), &QPushButton::clicked, this, [this]() {
+            if (onApply())
+                accept();
+        });
         connect(m_buttonBox, &QDialogButtonBox::rejected,
                 this, &QDialog::reject);
         // Cancel, Esc or the window's close button: the pending switches go.
@@ -584,7 +591,7 @@ namespace QtLLM
         m_modelFetchProtocol->fetchModels();
     }
 
-    void SettingsDialog::onApply()
+    bool SettingsDialog::onApply()
     {
         // A typed model the application does not allow: nothing is applied.
         if (providerPolicy(provider()).modelEditable && !isModelAllowed(provider(), model())) {
@@ -593,7 +600,7 @@ namespace QtLLM
                 : tr("The model \"%1\" is not available in this application.").arg(model()));
             m_modelHintLabel->setVisible(true);
             m_tabWidget->setCurrentIndex(0);
-            return;
+            return false;
         }
         m_modelHintLabel->setVisible(false);
         applyToolToggles();
@@ -601,10 +608,7 @@ namespace QtLLM
         scriptsWidget()->apply();
 #endif
         emit settingsApplied();
-        // Shown with show() it is a window beside the application: it stays
-        // open. With exec() Apply ends it, as before.
-        if (isModal())
-            accept();
+        return true;
     }
 
     void SettingsDialog::showEvent(QShowEvent* event)
