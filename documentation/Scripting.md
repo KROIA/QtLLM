@@ -26,7 +26,7 @@ The calls happen inside the application. Only the script and what it returns go 
 
 The engine is a library of its own, [ScriptHost](https://github.com/KROIA/ScriptHost): methods, checks, limits, dry run, approval, saved scripts, the Scripts tab and the editor with its debugger. It knows nothing about language models and can be used without QtLLM.
 
-`QtLLM::Scripting` is a `ScriptHost::ScriptEngine` with the model's side added: the tools `run_script` and `script_api`, tools as methods, `llm.ask`, and ending a script when its turn is cancelled. The ScriptHost classes are available under QtLLM names (`QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget`, `ScriptEditorDialog`).
+`QtLLM::Scripting` is a `ScriptHost::ScriptEngine` with the model's side added: the tools `run_script`, `script_api`, `script_status` and `stop_script`, tools as methods, `llm.ask`, and ending a script when its turn is cancelled (unless the model started it in the background). Scripting builds against ScriptHost 2: the engine and its widgets (ScriptHostWidgets) are both linked. The ScriptHost classes are available under QtLLM names (`QtLLM::ScriptMethod`, `ScriptError`, `ScriptLibrary`, `ScriptsWidget`, `ScriptEditorDialog`).
 
 ## Building with or without it
 
@@ -70,7 +70,7 @@ scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
 });
 ```
 
-From then on the model has the tools `run_script` and `script_api`.
+From then on the model has the tools `run_script`, `script_api`, `script_status` and `stop_script`.
 
 ## The methods a script can call
 
@@ -121,7 +121,9 @@ An exposed tool takes its input as one object and returns the tool's result; a t
 |---|---|
 | `log(...values)` | Line in the script log: shown to the user, the last 20 lines go back with the result |
 | `progress(done, total, text)` | Status line of the chat |
+| `print(...values)`, `console.log(...values)` | The same as `log` |
 | `sleep(ms)` | Waits; the application stays responsive |
+| `setTimeout(fn, ms)`, `setInterval(fn, ms)`, `clearTimeout(id)`, `clearInterval(id)` | Timers: the run goes on after the body returned, until no timer is left |
 | `pause(label)` | Stops in the debugger; does nothing otherwise |
 | `args` | The arguments of the run |
 
@@ -199,6 +201,24 @@ Other outcomes:
 
 A script that fails half way leaves its changes; `calls` says how many calls of which method were made. There is no rollback.
 
+### Long-running scripts
+
+With `background: true`, `run_script` does not wait for the result. It returns once the script has started (after the user's approval, where needed):
+
+```json
+{"status":"ok","run_id":7,"state":"running"}
+```
+
+The script goes on after the turn - a `while` loop with `sleep`, a `setInterval` that watches something - until it ends, reaches the time limit, or the model ends it. A script the model waits for (no `background`) is still stopped when its turn is cancelled.
+
+| Tool | |
+|---|---|
+| `script_status()` | The model's scripts, running ones first: `run_id`, `state` (`running` / `finished`), `elapsed_ms` and `progress` while running, `ended` (`ok`, `cancelled`, `limit`, `runtime`, ...) once finished |
+| `script_status(run_id)` | One of them, with the latest 20 log lines (`log`, `log_lines`) while it runs, the whole result (`result`) once it has finished |
+| `stop_script(run_id)` | Ends a running script and returns its status once it has ended |
+
+Both tools only know runs started through `run_script`; scripts of the user or the application are not the model's to stop. Background runs are held to the engine's `Limits` like every requested run - for scripts that run for hours, raise `timeoutMs` and `maxCalls` (0 = no limit).
+
 ### The language
 
 ECMAScript 2016 as implemented by Qt: `let` / `const`, arrow functions, `for...of`, template strings, destructuring, `Map` / `Set`. Not available: `async` / `await`, object spread; optional chaining (`?.`) and `??` only in a build with Qt 6. The script is the body of a function: `return` hands back the result. It runs in strict mode.
@@ -216,15 +236,16 @@ With `dry_run: true`, read-only methods run for real and every other call is rec
 
 ```cpp
 QtLLM::Scripting::Limits limits;
-limits.timeoutMs   = 300000;   // whole run; not applied in the debugger
-limits.maxCalls    = 5000;     // method calls
-limits.maxLogLines = 200;
+limits.timeoutMs         = 300000;   // whole run, timers included; not applied in the debugger; 0 = none
+limits.maxCalls          = 5000;     // method calls; 0 = none
+limits.maxLogLines       = 200;
+limits.maxConcurrentRuns = 8;        // runs at the same time; 0 = no limit
 scripting->setLimits(limits);
 ```
 
 `ScriptMethod::setMaxCallsPerRun(n)` limits one method, for methods that are expensive.
 
-One script runs at a time. A script that waits, sleeps or loops without calling anything is stopped by the time limit; `try` / `catch` in the script cannot swallow that.
+Several scripts run at once, each on its own thread and under its own `RunId`, up to `maxConcurrentRuns`; one beyond that fails with phase `unavailable`. A script that waits, sleeps or loops without calling anything is stopped by the time limit; `try` / `catch` in the script cannot swallow that.
 
 ## Approval
 
@@ -251,7 +272,7 @@ The user decides the same in Settings > Scripts, with one check box per kind und
 
 The built-in dialog shows the code, the arguments and the methods the script uses, marked as reading or changing. The user can run it, test-run it (a dry run, with the result shown in the dialog) or decline with a reason that goes back to the model. "Do not ask again for this script in this session" remembers the exact code.
 
-`setApprovalHandler(handler)` replaces the dialog with the application's own; the handler may decide later.
+`Scripting` installs the dialog (ScriptHost's `useApprovalDialog`) without a parent window; `QtLLM::useApprovalDialog(scripting, mainWindow)` opens it over the application's window. `setApprovalHandler(handler)` replaces it with the application's own; the handler may decide later. Without a handler (`setApprovalHandler(nullptr)`) a run that needs approval fails with phase `approval`.
 
 ## Saved scripts
 
@@ -309,7 +330,7 @@ A switch that is not user configurable is shown disabled in the Scripts tab, and
 - **Switches**: "Allow the assistant to run scripts" and, under "Ask before running", one check box per kind of script.
 - **Scripts**: the saved scripts. New, Edit, Duplicate, Delete, Open folder.
 - **Methods**: every method with a check box; locked ones are greyed out.
-- **Runs**: the scripts run in this session, with code, arguments, result and log.
+- **Runs**: the scripts running now - who started them (the user or the assistant), since when, for how long, and a Stop button; a selected one shows its run id (the `run_id` the model uses), arguments, code and its log as it is written - and the scripts run in this session, with code, arguments, result and log.
 
 The editor (`QtLLM::ScriptEditorDialog`) is a window of its own: name, description, parameters, the code, and beside it the reference of the methods a script can call, with search. A double click inserts a call.
 
@@ -333,7 +354,8 @@ The engine has no debugger interface, so for a debug run the script is rewritten
 QtLLM::Scripting::RunOptions options;
 options.args = QJsonObject{{"before", 2015}};
 options.dryRun = true;
-scripting->run(code, options, [](const QJsonObject& result) { ... });
+const QtLLM::Scripting::RunId id = scripting->run(code, options, [](const QJsonObject& result) { ... });   // 0: did not start
+scripting->stop(id);   // or stopAll()
 
 const QtLLM::Scripting::Check check = scripting->check(code);   // compiles? uses only what exists?
 ```
@@ -342,4 +364,4 @@ const QtLLM::Scripting::Check check = scripting->check(code);   // compiles? use
 
 `requestRun(request, callback)` is what `run_script` uses: the script is checked, approved by the user where the kind of script needs it, then run. An application can route other requesters through it as well.
 
-Signals: `runStarted`, `runLog`, `runProgress`, `runFinished`; in the debugger `runPaused` and `runCallFinished`. `runs()` is the history of the session.
+Signals: `runStarted`, `runLog`, `runProgress`, `runFinished`; in the debugger `runPaused` and `runCallFinished`. Each names its run first (`RunId`). `activeRuns()` lists the runs going on, `runs()` is the history of the session.

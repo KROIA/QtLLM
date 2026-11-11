@@ -20,6 +20,9 @@ const char* const kScriptApi = "script_api";
 const char* const kListScripts = "list_scripts";
 const char* const kReadScript = "read_script";
 const char* const kSaveScript = "save_script";
+const char* const kScriptStatus = "script_status";
+const char* const kStopScript = "stop_script";
+const int kLogTail = 20;                      // log lines script_status shows
 
 QString compactJson(const QJsonValue& value)
 {
@@ -38,6 +41,11 @@ QJsonArray parametersToJson(const QList<ScriptLibrary::Parameter>& parameters)
 
 } // namespace
 
+struct Scripting::PendingRun
+{
+    std::function<void(RunId)> started;
+};
+
 // ------------------------------------------------------------ construction
 
 Scripting::Scripting(Client* client, QObject* parent)
@@ -54,24 +62,49 @@ Scripting::Scripting(Client* client, QObject* parent)
             syncTools();
     });
 
-    // One script, one question per tool - the answers hold for that run.
-    connect(this, &ScriptEngine::runStarted, this, [this]() {
-        m_consentAsked.clear();
-        m_consentDeclined.clear();
+    // ScriptHost 2 has no dialog of its own any more.
+    useApprovalDialog(this);
+
+    connect(this, &ScriptEngine::runStarted, this, [this](RunId id, const QString&, bool external) {
+        // One question per tool while scripts run - the answers hold until
+        // no script is left. A method does not know its run, so not per run.
+        if (activeRuns().size() == 1) {
+            m_consentAsked.clear();
+            m_consentDeclined.clear();
+        }
+        if (external && m_pending) {
+            const QSharedPointer<PendingRun> pending = m_pending;
+            m_pending.clear();
+            pending->started(id);
+        }
+    });
+    connect(this, &ScriptEngine::runLog, this, [this](RunId id, const QString& text) {
+        const auto it = m_live.find(id);
+        if (it == m_live.end())
+            return;
+        it->log << text;
+        if (it->log.size() > kLogTail)
+            it->log.removeFirst();
+        ++it->logLines;
     });
     connect(this, &ScriptEngine::runProgress, this,
-            [this](double doneCount, double total, const QString& text) {
-        if (!m_runProgress || !isExternalRun())
+            [this](RunId id, double doneCount, double total, const QString& text) {
+        const auto live = m_live.find(id);
+        if (live != m_live.end())
+            live->progress = QJsonObject{{"done", doneCount}, {"total", total}, {"text", text}};
+        const auto waited = m_waited.constFind(id);
+        if (waited == m_waited.cend())
             return;
         QString status = QStringLiteral("Script: %1 / %2").arg(doneCount).arg(total);
         if (!text.isEmpty())
             status += QStringLiteral(" - ") + text;
-        m_runProgress(status);
+        waited.value()(status);
     });
-    connect(this, &ScriptEngine::runFinished, this, [this]() {
-        m_runProgress = nullptr;
-        if (m_llmAgent)
-            m_llmAgent->deleteLater();
+    connect(this, &ScriptEngine::runFinished, this, [this](RunId id) {
+        m_live.remove(id);
+        m_waited.remove(id);
+        while (m_modelRuns.size() > 100)    // the engine keeps no more records
+            m_modelRuns.removeFirst();
     });
 
     if (m_client) {
@@ -80,11 +113,13 @@ Scripting::Scripting(Client* client, QObject* parent)
             if (!m_syncing)
                 syncExposedTools();
         });
-        // The turn ended while the model's script was still running: it was
-        // cancelled, and nobody is waiting for the result.
+        // The turn ended while a script it waits for was still running: it
+        // was cancelled, and nobody is waiting for the result. Background
+        // runs go on.
         connect(m_client, &Client::requestFinished, this, [this]() {
-            if (isExternalRun())
-                stop();
+            const QList<RunId> waited = m_waited.keys();
+            for (RunId id : waited)
+                stop(id);
         });
     }
     syncTools();
@@ -316,21 +351,19 @@ void Scripting::askLlm(const QJsonObject& args, bool choose, ScriptCompletion do
         return;
     }
 
-    // One helper per run, with an empty conversation for every question.
-    if (!m_llmAgent) {
-        AgentConfig config = m_llmConfig();
-        if (config.name.isEmpty())
-            config.name = QStringLiteral("script-llm");
-        if (config.systemPrompt.isEmpty()) {
-            config.systemPrompt = QStringLiteral(
-                "A program asks you a question and uses your reply as it is. Reply with the "
-                "answer only: no introduction, no explanation unless the question asks for one.");
-        }
-        m_llmAgent = new Agent(config, this);
-        if (m_client)
-            m_llmAgent->setModelFilter(m_client->allowedModels(), m_client->blockedModels());
+    // A helper per question: an empty conversation every time, and scripts
+    // running at once do not share one.
+    AgentConfig config = m_llmConfig();
+    if (config.name.isEmpty())
+        config.name = QStringLiteral("script-llm");
+    if (config.systemPrompt.isEmpty()) {
+        config.systemPrompt = QStringLiteral(
+            "A program asks you a question and uses your reply as it is. Reply with the "
+            "answer only: no introduction, no explanation unless the question asks for one.");
     }
-    m_llmAgent->clearConversation();
+    Agent* agent = new Agent(config, this);
+    if (m_client)
+        agent->setModelFilter(m_client->allowedModels(), m_client->blockedModels());
 
     QString prompt = args.value("prompt").toString();
     if (choose) {
@@ -344,7 +377,8 @@ void Scripting::askLlm(const QJsonObject& args, bool choose, ScriptCompletion do
                   + (data.isString() ? data.toString() : compactJson(data));
     }
 
-    m_llmAgent->ask(prompt, [done, options, choose](const QString& reply, bool ok) {
+    agent->ask(prompt, [agent, done, options, choose](const QString& reply, bool ok) {
+        agent->deleteLater();
         if (!ok) {
             done.fail(reply);
             return;
@@ -372,6 +406,42 @@ void Scripting::askLlm(const QJsonObject& args, bool choose, ScriptCompletion do
     });
 }
 
+// ------------------------------------------------------------ the model's runs
+
+QJsonObject Scripting::runStatus(RunId id, bool details) const
+{
+    QJsonObject status{{"run_id", double(id)}};
+    const auto live = m_live.constFind(id);
+    if (isRunning(id)) {
+        const RunRecord record = activeRun(id);
+        if (!record.name.isEmpty())
+            status["name"] = record.name;
+        status["state"] = "running";
+        status["elapsed_ms"] = double(record.started.msecsTo(QDateTime::currentDateTime()));
+        if (live != m_live.cend() && !live->progress.isEmpty())
+            status["progress"] = live->progress;
+        if (details && live != m_live.cend()) {
+            status["log"] = QJsonArray::fromStringList(live->log);
+            status["log_lines"] = live->logLines;
+        }
+        return status;
+    }
+    const QList<RunRecord> records = runs();
+    for (auto it = records.crbegin(); it != records.crend(); ++it) {
+        if (it->id != id)
+            continue;
+        if (!it->name.isEmpty())
+            status["name"] = it->name;
+        status["state"] = "finished";
+        status["ended"] = it->result.value("status").toString() == QLatin1String("ok")
+                              ? QStringLiteral("ok") : it->result.value("phase").toString();
+        if (details)
+            status["result"] = it->result;      // with duration_ms and the end of the log
+        return status;
+    }
+    return QJsonObject();
+}
+
 // ------------------------------------------------------------ the model's tools
 
 void Scripting::syncTools()
@@ -390,7 +460,13 @@ void Scripting::syncTools()
         "language is ECMAScript 2016 - no async/await, no optional chaining (?.), no ??, no "
         "object spread. The script is checked before it runs; a mistake comes back with its "
         "line. With dry_run, methods that change something are only recorded and you get "
-        "back what the script would do.");
+        "back what the script would do. With background, you get its run_id at once and the "
+        "script goes on after your turn: for one that runs long (a loop that watches "
+        "something, timers with setInterval) - script_status reads how it is doing, "
+        "stop_script ends it.");
+    const int timeoutMs = limits().timeoutMs;
+    if (timeoutMs > 0)
+        description += QStringLiteral(" Every script ends after %1 seconds.").arg(timeoutMs / 1000);
     if (m_apiDelivery == ApiDelivery::InToolDescription)
         description += QStringLiteral("\n\nThe methods a script can call:\n") + apiDefinition();
     else
@@ -433,7 +509,9 @@ void Scripting::syncTools()
         runTool.addParameter(QStringLiteral("args"), QStringLiteral("object"),
                              QStringLiteral("Becomes `args` in the script."))
                .addParameter(QStringLiteral("dry_run"), QStringLiteral("boolean"),
-                             QStringLiteral("Only record the calls that would change something."));
+                             QStringLiteral("Only record the calls that would change something."))
+               .addParameter(QStringLiteral("background"), QStringLiteral("boolean"),
+                             QStringLiteral("Return the run_id at once instead of waiting for the result."));
         m_client->registerAsyncTool(runTool, [self](const QJsonObject& input, ToolCompletion done) {
             if (!self) {
                 done.finish(toolError(QStringLiteral("scripting is gone")));
@@ -461,12 +539,108 @@ void Scripting::syncTools()
             } else {
                 request.name.clear();
             }
-            self->m_runProgress = [done](const QString& text) { done.progress(text); };
+            // The run starts inside requestRun(), or - after the user's
+            // approval - right after `abandoned` was asked; runStarted then
+            // hands its id to m_pending.
+            const bool background = input.value("background").toBool();
+            const auto pending = QSharedPointer<PendingRun>::create();
+            Scripting* const engine = self.data();
+            pending->started = [engine, done, background](RunId id) {
+                engine->m_modelRuns << id;
+                engine->m_live.insert(id, LiveRun());
+                if (background)
+                    done.finish(toolOk({{"run_id", double(id)}, {"state", "running"}}));
+                else
+                    engine->m_waited.insert(id, [done](const QString& text) { done.progress(text); });
+            };
+            self->m_pending = pending;
             self->requestRun(request,
-                             [done](const QJsonObject& result) { done.finish(result); },
-                             [done]() { return done.isFinished(); });
+                             [self, pending, done](const QJsonObject& result) {
+                                 // Did not start, or ended. A background run's
+                                 // tool call is already finished: nothing then.
+                                 if (self && self->m_pending == pending)
+                                     self->m_pending.clear();
+                                 done.finish(result);
+                             },
+                             [self, pending, done]() {
+                                 if (done.isFinished())
+                                     return true;
+                                 if (self)
+                                     self->m_pending = pending;
+                                 return false;
+                             });
+            if (self && self->m_pending == pending)
+                self->m_pending.clear();    // waits for the user's approval
         });
         m_registeredTools << runTool.name();
+
+        // ---- script_status
+        Tool statusTool;
+        statusTool.setName(QLatin1String(kScriptStatus))
+                  .setTitle(QStringLiteral("Script status"))
+                  .setGroup(group)
+                  .setReadOnly(true)
+                  .setDescription(QStringLiteral(
+                      "How the scripts you started are doing. With run_id: that one - running or "
+                      "finished, how long, its progress, the latest log lines and, once finished, "
+                      "its result. Without: a list of your scripts, running ones first."))
+                  .addParameter(QStringLiteral("run_id"), QStringLiteral("integer"),
+                                QStringLiteral("As run_script returned it; leave out for the list."));
+        m_client->registerTool(statusTool, [self](const QJsonObject& input) -> QJsonObject {
+            if (!self)
+                return toolError(QStringLiteral("scripting is gone"));
+            if (input.contains("run_id")) {
+                const RunId id = RunId(input.value("run_id").toDouble());
+                const QJsonObject status = self->m_modelRuns.contains(id) ? self->runStatus(id, true)
+                                                                          : QJsonObject();
+                if (status.isEmpty())
+                    return toolError(QStringLiteral("no script of yours with run_id %1").arg(id));
+                return toolOk(status);
+            }
+            QJsonArray running, finished;
+            for (RunId id : std::as_const(self->m_modelRuns)) {
+                const QJsonObject status = self->runStatus(id, false);
+                if (status.isEmpty())
+                    continue;   // gone from the history
+                (status.value("state").toString() == QLatin1String("running") ? running : finished).append(status);
+            }
+            for (const QJsonValue& v : std::as_const(finished))
+                running.append(v);
+            return toolOk({{"scripts", running}});
+        });
+        m_registeredTools << statusTool.name();
+
+        // ---- stop_script
+        Tool stopTool;
+        stopTool.setName(QLatin1String(kStopScript))
+                .setTitle(QStringLiteral("Stop script"))
+                .setGroup(group)
+                .setDescription(QStringLiteral(
+                    "Ends a running script you started, and returns how it ended. What it changed "
+                    "stays changed."))
+                .addParameter(QStringLiteral("run_id"), QStringLiteral("integer"),
+                              QStringLiteral("As run_script returned it."), true);
+        m_client->registerAsyncTool(stopTool, [self](const QJsonObject& input, ToolCompletion done) {
+            const RunId id = RunId(input.value("run_id").toDouble());
+            if (!self || !self->m_modelRuns.contains(id)) {
+                done.finish(toolError(QStringLiteral("no script of yours with run_id %1").arg(id)));
+                return;
+            }
+            if (!self->isRunning(id)) {
+                done.finish(toolOk(self->runStatus(id, true)));     // already ended
+                return;
+            }
+            auto connection = QSharedPointer<QMetaObject::Connection>::create();
+            *connection = connect(self.data(), &ScriptEngine::runFinished, self.data(),
+                                  [self, id, done, connection](RunId finished) {
+                if (finished != id)
+                    return;
+                QObject::disconnect(*connection);
+                done.finish(toolOk(self->runStatus(id, true)));
+            });
+            self->stop(id);
+        });
+        m_registeredTools << stopTool.name();
 
         // ---- script_api
         if (m_apiDelivery == ApiDelivery::OnDemand) {

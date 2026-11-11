@@ -48,6 +48,7 @@ public:
         ADD_TEST(TST_Scripting::testExposedTools);
         ADD_TEST(TST_Scripting::testApiDefinition);
         ADD_TEST(TST_Scripting::testModelRunsScripts);
+        ADD_TEST(TST_Scripting::testModelRunsLongScriptsInTheBackground);
         ADD_TEST(TST_Scripting::testApprovalAlways);
         ADD_TEST(TST_Scripting::testApprovalForChangingScripts);
         ADD_TEST(TST_Scripting::testApprovalDialog);
@@ -541,10 +542,10 @@ private:
         QtLLM::Client client("key", api.url());
         QtLLM::Scripting scripting(&client);
         QStringList logged;
-        QObject::connect(&scripting, &QtLLM::Scripting::runLog, [&](const QString& text) { logged << text; });
+        QObject::connect(&scripting, &QtLLM::Scripting::runLog, [&](QtLLM::Scripting::RunId, const QString& text) { logged << text; });
         QList<double> progress;
         QObject::connect(&scripting, &QtLLM::Scripting::runProgress,
-                         [&](double done, double total, const QString&) { progress << done << total; });
+                         [&](QtLLM::Scripting::RunId, double done, double total, const QString&) { progress << done << total; });
 
         QJsonObject result = runScript(scripting,
             "log('start', 3, {a: 1});\nprogress(1, 2, 'half');\nreturn [1, 'two', {three: 3}, null];\n");
@@ -657,20 +658,25 @@ private:
             int started = 0;
             QObject::connect(&scripting, &QtLLM::Scripting::runStarted, [&]() { ++started; });
 
-            TEST_ASSERT(scripting.run("sleep(60000);\nreturn 1;", Options(), [&](const QJsonObject& r) {
-                result = r;
-                done = true;
-            }));
+            const QtLLM::Scripting::RunId first =
+                scripting.run("sleep(60000);\nreturn 1;", Options(), [&](const QJsonObject& r) {
+                    result = r;
+                    done = true;
+                });
+            TEST_ASSERT(first != 0);
             TEST_COMPARE(started, 1);
-            TEST_ASSERT(scripting.isRunning());
+            TEST_ASSERT(scripting.isRunning(first));
 
-            // One at a time.
+            // Several at once: a second one runs beside it, under its own id.
             QJsonObject second;
-            TEST_ASSERT(!scripting.run("return 2;", Options(), [&](const QJsonObject& r) { second = r; }));
-            TEST_COMPARE(second["status"].toString(), QString("error"));
-            TEST_ASSERT(second["message"].toString().contains("another script"));
+            const QtLLM::Scripting::RunId secondId =
+                scripting.run("return 2;", Options(), [&](const QJsonObject& r) { second = r; });
+            TEST_ASSERT(secondId != 0 && secondId != first);
+            TEST_ASSERT(spin([&]() { return !second.isEmpty(); }, 5000));
+            TEST_COMPARE(second["result"].toInt(), 2);
+            TEST_ASSERT(scripting.isRunning(first));
 
-            scripting.stop();
+            scripting.stop(first);
             TEST_ASSERT(spin([&]() { return done; }, 5000));
             TEST_COMPARE(result["phase"].toString(), QString("cancelled"));
             TEST_ASSERT(!scripting.isRunning());
@@ -722,7 +728,7 @@ private:
         });
         spin([]() { return false; }, 100);
         TEST_ASSERT(scripting.isRunning());
-        scripting.stop();
+        scripting.stopAll();
         TEST_ASSERT(spin([&]() { return done; }, 5000));
         TEST_COMPARE(result["phase"].toString(), QString("cancelled"));
     }
@@ -946,6 +952,96 @@ private:
         TEST_COMPARE(api.messageRequests, 4);
         TEST_ASSERT(scripting.runs().last().external);
         TEST_COMPARE(scripting.runs().size(), 2);       // the broken one never ran
+    }
+
+    // A script that loops for 10 seconds, started in the background: the turn
+    // does not wait for it, the model reads its state by run_id, it ends by
+    // itself; a second one, endless, the model stops.
+    TEST_FUNCTION(testModelRunsLongScriptsInTheBackground)
+    {
+        TEST_START;
+
+        FakeApi api;
+        QtLLM::Client client("key", api.url());
+        QtLLM::Scripting scripting(&client);
+        TEST_ASSERT(client.toolNames().contains("script_status"));
+        TEST_ASSERT(client.toolNames().contains("stop_script"));
+
+        auto call = [](const QString& tool, const QJsonObject& input, const QString& id) {
+            return FakeApi::toolUseReply(tool, input, id);
+        };
+        auto runId = [](const QJsonObject& result) {
+            return QtLLM::Scripting::RunId(result["run_id"].toDouble());
+        };
+
+        const QString tenSeconds =
+            "const end = Date.now() + 10000;\n"
+            "let i = 0;\n"
+            "while (Date.now() < end) {\n"
+            "    i++;\n"
+            "    log('tick ' + i);\n"
+            "    progress(i, 10, 'looping');\n"
+            "    sleep(1000);\n"
+            "}\n"
+            "return i;\n";
+        const QString endless = "while (true) { sleep(100); }";
+
+        // Two scripts started; the turn is over at once.
+        QElapsedTimer timer;
+        timer.start();
+        api.replies.enqueue(scriptCall(tenSeconds, QJsonObject{{"background", true}}, "t1"));
+        api.replies.enqueue(scriptCall(endless, QJsonObject{{"background", true}}, "t2"));
+        api.replies.enqueue(FakeApi::textReply("Started both."));
+        Outcome outcome = turn(client, "Start them.");
+        TEST_ASSERT(outcome.errors.isEmpty());
+        TEST_ASSERT(timer.elapsed() < 3000);
+        TEST_COMPARE(outcome.toolResults.size(), 2);
+        TEST_COMPARE(outcome.toolResults[0]["state"].toString(), QString("running"));
+        const QtLLM::Scripting::RunId loop = runId(outcome.toolResults[0]);
+        const QtLLM::Scripting::RunId endlessRun = runId(outcome.toolResults[1]);
+        TEST_ASSERT(loop != 0 && endlessRun != 0 && loop != endlessRun);
+        TEST_ASSERT(scripting.isRunning(loop) && scripting.isRunning(endlessRun));   // the turn ended, they did not
+
+        // The model looks at the list and at one of them.
+        spin([]() { return false; }, 2500);
+        api.replies.enqueue(call("script_status", QJsonObject(), "s1"));
+        api.replies.enqueue(call("script_status", QJsonObject{{"run_id", double(loop)}}, "s2"));
+        api.replies.enqueue(call("script_status", QJsonObject{{"run_id", 9999}}, "s3"));
+        api.replies.enqueue(FakeApi::textReply("Both are running."));
+        outcome = turn(client, "How are they?");
+        const QJsonArray list = outcome.toolResults[0]["scripts"].toArray();
+        TEST_COMPARE(list.size(), 2);
+        TEST_COMPARE(list[0].toObject()["state"].toString(), QString("running"));
+        TEST_COMPARE(list[1].toObject()["state"].toString(), QString("running"));
+        const QJsonObject running = outcome.toolResults[1];
+        TEST_COMPARE(running["state"].toString(), QString("running"));
+        TEST_ASSERT(running["elapsed_ms"].toDouble() >= 2000);
+        TEST_ASSERT(running["log_lines"].toInt() >= 2);
+        TEST_ASSERT(running["log"].toArray().last().toString().startsWith("tick "));
+        TEST_COMPARE(running["progress"].toObject()["text"].toString(), QString("looping"));
+        TEST_COMPARE(outcome.toolResults[2]["status"].toString(), QString("error"));
+
+        // The model ends the endless one; the result says how it ended.
+        api.replies.enqueue(call("stop_script", QJsonObject{{"run_id", double(endlessRun)}}, "x1"));
+        api.replies.enqueue(FakeApi::textReply("Stopped."));
+        outcome = turn(client, "Stop the endless one.");
+        TEST_COMPARE(outcome.toolResults[0]["state"].toString(), QString("finished"));
+        TEST_COMPARE(outcome.toolResults[0]["ended"].toString(), QString("cancelled"));
+        TEST_ASSERT(!scripting.isRunning(endlessRun));
+        TEST_ASSERT(scripting.isRunning(loop));            // the other goes on
+
+        // The loop ends by itself after its 10 seconds.
+        TEST_ASSERT(spin([&]() { return !scripting.isRunning(loop); }, 15000));
+        TEST_ASSERT(timer.elapsed() >= 10000);
+        api.replies.enqueue(call("script_status", QJsonObject{{"run_id", double(loop)}}, "s4"));
+        api.replies.enqueue(FakeApi::textReply("Done."));
+        outcome = turn(client, "And now?");
+        const QJsonObject finished = outcome.toolResults[0];
+        TEST_COMPARE(finished["state"].toString(), QString("finished"));
+        TEST_COMPARE(finished["ended"].toString(), QString("ok"));
+        const QJsonObject result = finished["result"].toObject();
+        TEST_ASSERT(result["result"].toInt() >= 9 && result["result"].toInt() <= 11);
+        TEST_ASSERT(result["duration_ms"].toDouble() >= 10000);
     }
 
     TEST_FUNCTION(testApprovalAlways)
@@ -1228,7 +1324,7 @@ private:
         QStringList returned;
         bool autoStep = true;
         QObject::connect(&scripting, &QtLLM::Scripting::runPaused,
-                         [&](int line, const QString& method, const QJsonArray& args) {
+                         [&](QtLLM::Scripting::RunId, int line, const QString& method, const QJsonArray& args) {
             stops.append({line, method, args});
             if (autoStep)
                 scripting.stepRun();
@@ -1236,7 +1332,7 @@ private:
                 scripting.continueRun();
         });
         QObject::connect(&scripting, &QtLLM::Scripting::runCallFinished,
-                         [&](int line, const QString& method, const QJsonArray&, const QJsonValue& value,
+                         [&](QtLLM::Scripting::RunId, int line, const QString& method, const QJsonArray&, const QJsonValue& value,
                              const QString& error) {
             returned << QString("%1:%2:%3").arg(line).arg(method,
                 error.isEmpty() ? QString::fromUtf8(QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact)).left(24)
@@ -1306,7 +1402,7 @@ private:
         TEST_ASSERT(spin([&]() { return paused; }, 5000));
         spin([]() { return false; }, 500);
         TEST_ASSERT(scripting.isRunning());                 // still waiting, not timed out
-        scripting.stop();
+        scripting.stopAll();
         TEST_ASSERT(spin([&]() { return done; }, 5000));
         TEST_COMPARE(result["phase"].toString(), QString("cancelled"));
 

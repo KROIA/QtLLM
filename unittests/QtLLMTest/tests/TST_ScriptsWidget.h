@@ -415,8 +415,8 @@ private:
         TEST_ASSERT(spin([&]() { return !editor.isOwnRunActive(); }));
         TEST_COMPARE(editor.errorLine(), 3);
 
-        // Another run (the assistant's) keeps the buttons disabled and does
-        // not reach this window.
+        // Another run (the assistant's) goes on beside this window's and does
+        // not reach it; only Debug is refused while that one is in the debugger.
         QtLLM::Scripting::RunOptions foreign;
         foreign.debug = true;
         foreign.stepFromStart = true;
@@ -425,11 +425,14 @@ private:
         auto pausedConnection = QObject::connect(&scripting, &QtLLM::Scripting::runPaused, [&]() { paused = true; });
         scripting.run("return db.list().length;", foreign, [&](const QJsonObject&) { foreignDone = true; });
         TEST_ASSERT(spin([&]() { return paused; }));
-        TEST_ASSERT(!runButton->isEnabled());
-        TEST_ASSERT(!editor.runScript());
+        TEST_ASSERT(runButton->isEnabled());
+        TEST_ASSERT(!editor.debugScript());
+        TEST_ASSERT(editor.runScript());
+        TEST_ASSERT(spin([&]() { return !editor.isOwnRunActive(); }));
+        TEST_ASSERT(!foreignDone);
         TEST_COMPARE(editor.findChild<QTableWidget*>("scripthost_scriptEditorCalls")->rowCount(), 0);
         TEST_COMPARE(editor.pausedLine(), 0);
-        scripting.stop();
+        scripting.stopAll();
         TEST_ASSERT(spin([&]() { return foreignDone; }));
         QObject::disconnect(pausedConnection);
         TEST_ASSERT(runButton->isEnabled());

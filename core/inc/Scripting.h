@@ -12,6 +12,7 @@
 #define QTLLM_HAS_SCRIPTING 1
 
 #include "Agent.h"
+#include "ScriptApprovalDialog.h"
 #include "ScriptEditorDialog.h"
 #include "ScriptEngine.h"
 #include "ScriptLibrary.h"
@@ -39,6 +40,9 @@ using AsyncScriptMethodHandler = ScriptHost::AsyncScriptMethodHandler;
 using ScriptLibrary            = ScriptHost::ScriptLibrary;
 using ScriptsWidget            = ScriptHost::ScriptsWidget;
 using ScriptEditorDialog       = ScriptHost::ScriptEditorDialog;
+// Installs the approval dialog for the model's scripts over `parent`.
+// Scripting installs it without a parent; call it again to give it one.
+using ScriptHost::useApprovalDialog;
 
 // Lets the model run JavaScript inside the application.
 //
@@ -54,7 +58,11 @@ using ScriptEditorDialog       = ScriptHost::ScriptEditorDialog;
 //     read_script and save_script
 //   - tools of the client as script methods (exposeTool)
 //   - llm.ask / llm.choose: a question to a model from inside a script
-//   - a script of the model ends when its turn is cancelled
+//   - a script of the model ends when its turn is cancelled - unless the
+//     model started it in the background (run_script with background: true):
+//     that one goes on, under its run_id, until it ends, reaches the
+//     engine's Limits or the model ends it; script_status and stop_script
+//     are the model's tools for it
 //
 //   auto* scripting = new QtLLM::Scripting(&client, this);
 //   QtLLM::ScriptMethod read("db.readObject");
@@ -125,6 +133,7 @@ private:
     bool isExposed(const QString& toolName, const QString& group) const;
     void registerLlmMethods();
     void askLlm(const QJsonObject& args, bool choose, ScriptCompletion done);
+    QJsonObject runStatus(RunId id, bool details) const;
 
     QPointer<Client>     m_client;
     QStringList          m_registeredTools;     // names of the tools this object registered
@@ -139,12 +148,24 @@ private:
     QSet<QString>        m_consentAsked, m_consentDeclined;     // per run
 
     std::function<AgentConfig()> m_llmConfig;
-    QPointer<Agent>      m_llmAgent;            // lives for one run
     int                  m_llmCallLimit = 200;
 
     ApiDelivery          m_apiDelivery = ApiDelivery::OnDemand;
     bool                 m_modelMaySave = true;
-    std::function<void(const QString&)> m_runProgress;  // status line of the model's run
+
+    // The model's runs. requestRun() does not say which run it started; the
+    // one run_script waits for is m_pending until runStarted names it.
+    struct PendingRun;
+    struct LiveRun
+    {
+        QStringList log;                        // the latest lines
+        int         logLines = 0;               // all of them
+        QJsonObject progress;
+    };
+    QSharedPointer<PendingRun> m_pending;
+    QList<RunId>         m_modelRuns;           // started through run_script, oldest first
+    QHash<RunId, LiveRun> m_live;               // those still running
+    QHash<RunId, std::function<void(const QString&)>> m_waited;  // run_script waits: its status line
 };
 
 } // namespace QtLLM

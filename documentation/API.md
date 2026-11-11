@@ -1289,14 +1289,14 @@ scripting->registerMethod(read, [this](const QJsonObject& args) -> QJsonValue {
 
 | | |
 |---|---|
-| Tools for the model | `run_script(code \| name, args, dry_run)`, `script_api(query)`; with a library `list_scripts`, `read_script`, `save_script` |
+| Tools for the model | `run_script(code \| name, args, dry_run, background)`, `script_api(query)`, `script_status(run_id)`, `stop_script(run_id)`; with a library `list_scripts`, `read_script`, `save_script` |
 | Methods | `registerMethod`, `registerAsyncMethod`, `unregisterMethod`; `exposeTool` / `exposeToolGroup` / `exposeAllTools` make tools callable as `tools.<name>({...})` |
 | Built in | `log`, `progress`, `sleep`, `pause`, `args`; `llm.ask` / `llm.choose` after `setLlmConfigProvider` |
 | Definition | `apiDefinition(query)`: the enabled methods as TypeScript declarations, for the model and for the editor |
 | Before a script runs | `check(code)`: syntax, and that every method it names exists and is enabled. Errors carry the line |
-| Running | `run(code, options, callback)`, `stop()`, `isRunning()`; `RunOptions::dryRun` records changing calls instead of making them |
+| Running | `run(code, options, callback)` returns a `RunId` (0: did not start); several runs at once; `stop(id)`, `stopAll()`, `isRunning(id)`, `activeRuns()`; `RunOptions::dryRun` records changing calls instead of making them |
 | Limits | `setLimits({timeoutMs, maxCalls, maxLogLines})`, `ScriptMethod::setMaxCallsPerRun`, `setLlmCallLimit` |
-| Approval | `setApprovalRequired(ScriptKind, bool)` per kind (`NewReading`, `NewChanging`, `SavedReading`, `SavedChanging`, `DryRun`), `setApproval(Never \| ChangingScripts \| Always)` for all, `setApprovalHandler` |
+| Approval | `setApprovalRequired(ScriptKind, bool)` per kind (`NewReading`, `NewChanging`, `SavedReading`, `SavedChanging`, `DryRun`), `setApproval(Never \| ChangingScripts \| Always)` for all, `setApprovalHandler`; the dialog is installed by default, `QtLLM::useApprovalDialog(scripting, parent)` gives it a parent |
 | Debugger | `RunOptions::debug` and `statements`, `stepStatement()`, `stepRun()` (to the next call), `continueRun()`, `setBreakpoints()`, signals `runPaused(line, method, arguments, variables)`, `runCallFinished` |
 | Saved scripts | `QtLLM::ScriptLibrary`: `setDirectory`, `addReadOnlyDirectory`, `scripts()`, `save`, `remove` |
 | User interface | `SettingsDialog::setScripting()` adds the Scripts tab (`QtLLM::ScriptsWidget`); `QtLLM::ScriptEditorDialog` is the editor with runner and call stepping |

@@ -114,7 +114,7 @@ void ChatWindow::registerScripting()
     // QtLLM::Scripting is a ScriptHost::ScriptEngine with the model's side
     // added: the tools run_script and script_api, tools as methods, llm.ask.
     m_scripting = new QtLLM::Scripting(&m_client, this);
-    m_scripting->setDialogParent(this);
+    QtLLM::useApprovalDialog(m_scripting, this);
 
     auto* table = findChild<QTableWidget*>("inventoryTable");
     const QString group = "Inventory";
@@ -246,15 +246,15 @@ void ChatWindow::registerScripting()
         QJsonDocument::fromJson(QSettings().value(kScriptSettingsKey).toByteArray()).object());
 
     // What scripts do is shown in the agent log.
-    connect(m_scripting, &QtLLM::Scripting::runStarted, this, [this](const QString& name, bool byModel) {
+    connect(m_scripting, &QtLLM::Scripting::runStarted, this, [this](QtLLM::Scripting::RunId, const QString& name, bool byModel) {
         logAgent(QString("[script] %1 started by the %2")
                      .arg(name.isEmpty() ? QString("a script") : "'" + name + "'",
                           byModel ? "assistant" : "user"));
     });
-    connect(m_scripting, &QtLLM::Scripting::runLog, this, [this](const QString& text) {
+    connect(m_scripting, &QtLLM::Scripting::runLog, this, [this](QtLLM::Scripting::RunId, const QString& text) {
         logAgent("[script] " + text);
     });
-    connect(m_scripting, &QtLLM::Scripting::runFinished, this, [this](const QJsonObject& result) {
+    connect(m_scripting, &QtLLM::Scripting::runFinished, this, [this](QtLLM::Scripting::RunId, const QJsonObject& result) {
         logAgent("[script] finished: "
                  + QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact)).left(400));
     });

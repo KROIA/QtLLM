@@ -1,10 +1,11 @@
-## description: Qt library that lets users and programs script a C++ application in JavaScript: the app defines the callable methods, scripts run sandboxed on their own thread, with checks, limits, dry run, call stepping and a built-in editor.
+## description: Qt library that lets users and programs script a C++ application in JavaScript: the app defines the callable methods, scripts run sandboxed on their own threads, several at once, with timers, checks, limits, dry run and call stepping. The engine needs only Qt Core + Qml; the optional ScriptHostWidgets library adds the editor, debugger and scripts window.
 ##
 ## QtLLM uses it for QtLLM::Scripting: the model writes one script instead of
 ## making a tool call per item. The dependency is optional:
 ##
-##   QTLLM_SCRIPTING=ON  (default)  ScriptHost is fetched and linked (it brings
-##                                  the Qt module Qml); SH_LIBRARY_AVAILABLE is
+##   QTLLM_SCRIPTING=ON  (default)  ScriptHost and ScriptHostWidgets are
+##                                  fetched and linked (they bring the Qt
+##                                  module Qml); SH_LIBRARY_AVAILABLE is
 ##                                  defined and QtLLM::Scripting exists.
 ##   QTLLM_SCRIPTING=OFF            nothing is fetched, no Qml. Scripting.h
 ##                                  declares nothing; QTLLM_HAS_SCRIPTING is 0.
@@ -26,6 +27,13 @@ function(dep LIBRARY_MACRO_NAME SHARED_LIB STATIC_LIB STATIC_PROFILE_LIB INCLUDE
 	set(NO_EXAMPLES True)
 	set(NO_UNITTESTS True)
 	set(ADDITIONAL_INCLUDE_PATHS )
+	# Two libraries since ScriptHost 2.0: the engine (ScriptHost) and the
+	# widgets (ScriptHostWidgets: Scripts tab, editor, approval dialog).
+	# QtLLM uses both.
+	set(ADDITIONAL_SHARED_LIB_DEPENDENCIES ScriptHostWidgets_shared)
+	set(ADDITIONAL_STATIC_LIB_DEPENDENCIES ScriptHostWidgets_static)
+	set(ADDITIONAL_STATIC_PROFILE_LIB_DEPENDENCIES
+		"$<IF:$<TARGET_EXISTS:ScriptHostWidgets_static_profile>,ScriptHostWidgets_static_profile,ScriptHostWidgets_static>")
 
 	downloadStandardLibrary()
 endfunction()
