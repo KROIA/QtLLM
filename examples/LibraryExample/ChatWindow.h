@@ -106,6 +106,7 @@ private:
     QString       m_lastAssistantReply;
     QtLLM::Agent* m_demoAgent   = nullptr;
     // Two agents that talk to each other (AgentConfig::messaging).
+    QPointer<QtLLM::SettingsDialog> m_settingsDialog;   // open beside the window, or null
     QPointer<QtLLM::Agent> m_writerAgent;
     QPointer<QtLLM::Agent> m_criticAgent;
     QtLLM::AppInterface* m_appInterface = nullptr;

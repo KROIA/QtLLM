@@ -162,7 +162,22 @@ private:
         TEST_ASSERT(client.provider() == QtLLM::Provider::ClaudeCode);
         TEST_COMPARE(client.model(), QString("sonnet"));
         TEST_COMPARE(client.exportConversation()["systemPrompt"].toString(), QString("Be brief."));
-        TEST_ASSERT(UnitTest::Gui::waitForClosed(&dlg));   // Apply accepts the dialog
+
+        // Shown with show(), it is a window beside the application: Apply
+        // leaves it open, and it can be applied again.
+        TEST_ASSERT(dlg.isVisible());
+        TEST_ASSERT(UnitTest::Gui::type(prompt, " Very."));
+        TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_applyButton", &dlg)));
+        TEST_ASSERT(client.exportConversation()["systemPrompt"].toString().endsWith("Very."));
+        TEST_ASSERT(dlg.isVisible());
+        TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_cancelButton", &dlg)));
+        TEST_ASSERT(UnitTest::Gui::waitForClosed(&dlg));
+
+        // Modal (exec() or open()): Apply accepts the dialog, as before.
+        dlg.open();
+        TEST_ASSERT(UnitTest::Gui::click(find<QPushButton>("qtllm_applyButton", &dlg)));
+        TEST_ASSERT(UnitTest::Gui::waitForClosed(&dlg));
+        TEST_COMPARE(dlg.result(), int(QDialog::Accepted));
     }
 
     TEST_FUNCTION(testSettingsToolsTabTogglesTool)

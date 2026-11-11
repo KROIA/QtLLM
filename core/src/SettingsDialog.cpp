@@ -601,7 +601,10 @@ namespace QtLLM
         scriptsWidget()->apply();
 #endif
         emit settingsApplied();
-        accept();
+        // Shown with show() it is a window beside the application: it stays
+        // open. With exec() Apply ends it, as before.
+        if (isModal())
+            accept();
     }
 
     void SettingsDialog::showEvent(QShowEvent* event)

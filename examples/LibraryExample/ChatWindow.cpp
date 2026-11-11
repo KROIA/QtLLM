@@ -976,20 +976,29 @@ void ChatWindow::saveConversation()
 
 void ChatWindow::openSettings()
 {
-    QtLLM::SettingsDialog dlg(this);
-    dlg.setModel(m_currentModel);
-    dlg.setSystemPrompt(m_systemPrompt);
+    // A window beside the chat, not a modal dialog: the application stays
+    // usable while it is open. Opening it again brings the open one forward.
+    if (m_settingsDialog) {
+        m_settingsDialog->raise();
+        m_settingsDialog->activateWindow();
+        return;
+    }
+    auto* dlg = new QtLLM::SettingsDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    m_settingsDialog = dlg;
+    dlg->setModel(m_currentModel);
+    dlg->setSystemPrompt(m_systemPrompt);
 
     // Populate BOTH providers' fields (not just the active one) so
     // switching the Provider combo restores whatever was last configured
     // for the other provider instead of the field's hardcoded default.
-    dlg.setApiKey(m_savedClaudeApiKey);
-    dlg.setEndpointUrl(m_savedClaudeEndpointUrl);
-    dlg.setOllamaUrl(m_savedOllamaUrl);
-    dlg.setFoundryApiKey(m_savedFoundryApiKey);
-    dlg.setFoundryEndpointUrl(m_savedFoundryUrl);
-    dlg.setOpenAiUrl(m_savedOpenAiUrl);
-    dlg.setOpenAiApiKey(m_savedOpenAiKey);
+    dlg->setApiKey(m_savedClaudeApiKey);
+    dlg->setEndpointUrl(m_savedClaudeEndpointUrl);
+    dlg->setOllamaUrl(m_savedOllamaUrl);
+    dlg->setFoundryApiKey(m_savedFoundryApiKey);
+    dlg->setFoundryEndpointUrl(m_savedFoundryUrl);
+    dlg->setOpenAiUrl(m_savedOpenAiUrl);
+    dlg->setOpenAiApiKey(m_savedOpenAiKey);
 
     // ---- What the user may change in this dialog ---------------------------
     // The application decides per provider. Here:
@@ -1004,25 +1013,25 @@ void ChatWindow::openSettings()
         Policy foundry;
         foundry.endpointEditable = false;
         foundry.allowedModels    = QStringList{"claude-sonnet-*", "claude-haiku-*"};
-        dlg.setProviderPolicy(QtLLM::SettingsDialog::Provider::Foundry, foundry);
+        dlg->setProviderPolicy(QtLLM::SettingsDialog::Provider::Foundry, foundry);
     }
     Policy ollama;
     ollama.blockedModels = QStringList{"*:70b", "*:120b"};
-    dlg.setProviderPolicy(QtLLM::SettingsDialog::Provider::Ollama, ollama);
-    dlg.setProvider(m_settingsProvider);
-    dlg.setModel(m_currentModel);   // setProvider() reset the model field
-    dlg.setFontSizePercent(m_fontSizePercent);
-    dlg.setShowToolCalls(m_chatDock->showToolCalls());
+    dlg->setProviderPolicy(QtLLM::SettingsDialog::Provider::Ollama, ollama);
+    dlg->setProvider(m_settingsProvider);
+    dlg->setModel(m_currentModel);   // setProvider() reset the model field
+    dlg->setFontSizePercent(m_fontSizePercent);
+    dlg->setShowToolCalls(m_chatDock->showToolCalls());
 
     // Wire usage history so the statistics tab shows live data
-    dlg.setUsageHistory(m_client.usageHistory());
+    dlg->setUsageHistory(m_client.usageHistory());
 
     // Tools tab: list registered tools, enable/disable applied on Apply
-    dlg.setClient(&m_client);
+    dlg->setClient(&m_client);
     // Scripts tab: the switches the application left to the user, the saved
     // scripts with their editor, the methods a script can call.
 #if QTLLM_HAS_SCRIPTING
-    dlg.setScripting(m_scripting);
+    dlg->setScripting(m_scripting);
 #endif
 
     // Model fetching is fully self-contained inside SettingsDialog (it
@@ -1033,13 +1042,13 @@ void ChatWindow::openSettings()
     // provider and merged its models into the combo alongside the
     // correct ones.
 
-    connect(&dlg, &QtLLM::SettingsDialog::settingsApplied, this, [&]() {
-        m_currentModel = dlg.model();
-        m_systemPrompt = dlg.systemPrompt();
-        m_fontSizePercent = dlg.fontSizePercent();
+    connect(dlg, &QtLLM::SettingsDialog::settingsApplied, this, [this, dlg]() {
+        m_currentModel = dlg->model();
+        m_systemPrompt = dlg->systemPrompt();
+        m_fontSizePercent = dlg->fontSizePercent();
         m_chatDock->setFontSizePercent(m_fontSizePercent);
-        m_chatDock->setShowToolCalls(dlg.showToolCalls());
-        QSettings().setValue(kShowToolCallsKey, dlg.showToolCalls());
+        m_chatDock->setShowToolCalls(dlg->showToolCalls());
+        QSettings().setValue(kShowToolCallsKey, dlg->showToolCalls());
         QSettings().setValue(kModelKey, m_currentModel);
         // The Tools tab has been applied to the client by now; remember it.
         QSettings().setValue(kToolsKey,
@@ -1049,14 +1058,14 @@ void ChatWindow::openSettings()
         // Persist both providers' fields in RAM regardless of which is
         // active, so switching back later restores exactly what was
         // last configured instead of a hardcoded default.
-        m_savedClaudeApiKey      = dlg.apiKey();
-        m_savedClaudeEndpointUrl = dlg.endpointUrl();
-        m_savedOllamaUrl         = dlg.ollamaUrl();
-        m_savedFoundryApiKey     = dlg.foundryApiKey();
-        m_savedFoundryUrl        = dlg.foundryEndpointUrl();
-        m_savedOpenAiUrl         = dlg.openAiUrl();
-        m_savedOpenAiKey         = dlg.openAiApiKey();
-        m_settingsProvider       = dlg.provider();
+        m_savedClaudeApiKey      = dlg->apiKey();
+        m_savedClaudeEndpointUrl = dlg->endpointUrl();
+        m_savedOllamaUrl         = dlg->ollamaUrl();
+        m_savedFoundryApiKey     = dlg->foundryApiKey();
+        m_savedFoundryUrl        = dlg->foundryEndpointUrl();
+        m_savedOpenAiUrl         = dlg->openAiUrl();
+        m_savedOpenAiKey         = dlg->openAiApiKey();
+        m_settingsProvider       = dlg->provider();
 
         // Kept for the agent demo, which spawns with the chat's credentials.
         switch (m_settingsProvider) {
@@ -1075,12 +1084,12 @@ void ChatWindow::openSettings()
         // One call covers provider switch, credentials, model and system
         // prompt. A provider switch starts a new conversation.
         const QtLLM::Provider before = m_client.provider();
-        dlg.applyTo(&m_client);
+        dlg->applyTo(&m_client);
         m_isOllama = (m_client.provider() == QtLLM::Provider::Ollama);
         if (m_client.provider() != before)
             m_chatDock->clearMessages();
     });
-    dlg.exec();
+    dlg->show();
 }
 
 void ChatWindow::initOllamaIfNeeded()

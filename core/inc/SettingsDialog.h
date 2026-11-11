@@ -85,6 +85,12 @@ namespace QtLLM
         void setFieldEditable(Field field, bool editable);
         void setFieldVisible(Field field, bool visible);
 
+        // Two ways to open it:
+        //   exec()  modal: the application waits; Apply applies and closes.
+        //   show()  a window beside the application, which stays usable;
+        //           Apply applies and the window stays open, Cancel drops
+        //           what was not applied and closes it. For one that lives
+        //           as long as it is open: setAttribute(Qt::WA_DeleteOnClose).
         explicit SettingsDialog(QWidget* parent = nullptr);
         ~SettingsDialog();
 
