@@ -13,6 +13,31 @@
 namespace QtLLM
 {
 
+namespace
+{
+// The card has a fixed light background. Indicators drawn by the application
+// style (dark themes, host style sheets) can be invisible on it, so the
+// option buttons draw their own.
+const char* const kOptionButtonStyle =
+    "QRadioButton, QCheckBox { background: transparent; border: none; color: #1a1a1a; spacing: 6px; }"
+    "QRadioButton:disabled, QCheckBox:disabled { color: #808080; }"
+    "QRadioButton::indicator, QCheckBox::indicator {"
+    "  width: 12px; height: 12px; background-color: white; border: 1px solid #4a6f96; }"
+    "QRadioButton::indicator { border-radius: 7px; }"
+    "QCheckBox::indicator { border-radius: 2px; }"
+    "QRadioButton::indicator:hover, QCheckBox::indicator:hover { border-color: #2980b9; background-color: #e8f2fc; }"
+    "QRadioButton::indicator:checked {"
+    "  background-color: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,"
+    "    stop:0 #2980b9, stop:0.5 #2980b9, stop:0.6 white, stop:1 white);"
+    "  border-color: #2980b9; }"
+    "QCheckBox::indicator:checked { background-color: #2980b9; border-color: #1f6391; }"
+    "QRadioButton::indicator:disabled, QCheckBox::indicator:disabled { border-color: #aaaaaa; background-color: #f4f4f4; }"
+    "QRadioButton::indicator:checked:disabled {"
+    "  background-color: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,"
+    "    stop:0 #8a8a8a, stop:0.5 #8a8a8a, stop:0.6 #f4f4f4, stop:1 #f4f4f4); }"
+    "QCheckBox::indicator:checked:disabled { background-color: #8a8a8a; }";
+}
+
 InterviewWidget::InterviewWidget(const QJsonObject& request, QWidget* parent)
     : QFrame(parent)
 {
@@ -116,7 +141,7 @@ void InterviewWidget::buildQuestion(const QJsonObject& questionObj, QVBoxLayout*
             button = new QCheckBox(label, this);
         else
             button = new QRadioButton(label, this);
-        button->setStyleSheet("background: transparent; border: none;");
+        button->setStyleSheet(kOptionButtonStyle);
         if (group)
             group->addButton(button);
         connect(button, &QAbstractButton::toggled, this, &InterviewWidget::updateSubmitEnabled);
@@ -141,7 +166,7 @@ void InterviewWidget::buildQuestion(const QJsonObject& questionObj, QVBoxLayout*
             toggle = new QCheckBox(tr("Other:"), this);
         else
             toggle = new QRadioButton(tr("Other:"), this);
-        toggle->setStyleSheet("background: transparent; border: none;");
+        toggle->setStyleSheet(kOptionButtonStyle);
         if (group)
             group->addButton(toggle);
         customRow->addWidget(toggle);

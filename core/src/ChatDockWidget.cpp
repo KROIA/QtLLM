@@ -151,12 +151,21 @@ namespace QtLLM
         m_loadingLabel = new QLabel("Thinking...", m_centralWidget);
         m_loadingLabel->setAlignment(Qt::AlignCenter);
         m_loadingLabel->setStyleSheet("color: #888; font-style: italic; padding: 4px;");
+        m_loadingLabel->setWordWrap(true);
+        m_loadingLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        m_loadingLabel->setMinimumWidth(1);
         m_loadingLabel->setVisible(false);
         mainLayout->addWidget(m_loadingLabel);
 
         m_statusLabel = new QLabel(m_centralWidget);
         m_statusLabel->setAlignment(Qt::AlignLeft);
         m_statusLabel->setStyleSheet("color: #2980b9; font-size: 11px; padding: 2px 4px;");
+        // Long status text must never widen the dock: wrap it, ignore its width
+        // hint (an unbreakable word is clipped instead) and show it in full in
+        // the tooltip.
+        m_statusLabel->setWordWrap(true);
+        m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        m_statusLabel->setMinimumWidth(1);
         m_statusLabel->setVisible(false);
         mainLayout->addWidget(m_statusLabel);
 
@@ -463,6 +472,7 @@ namespace QtLLM
     void ChatDockWidget::setStatusText(const QString& text)
     {
         m_statusLabel->setText(text);
+        m_statusLabel->setToolTip(text);
         m_statusLabel->setVisible(true);
     }
 
@@ -509,6 +519,7 @@ namespace QtLLM
     void ChatDockWidget::clearStatus()
     {
         m_statusLabel->clear();
+        m_statusLabel->setToolTip(QString());
         m_statusLabel->setVisible(false);
     }
 
@@ -757,6 +768,7 @@ namespace QtLLM
     void ChatDockWidget::setLoadingText(const QString& text)
     {
         m_loadingLabel->setText(text);
+        m_loadingLabel->setToolTip(text);
     }
 
     void ChatDockWidget::setCancelledText(const QString& text)
